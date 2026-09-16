@@ -1,0 +1,9 @@
+# Python 3.10-3.13 (TensorFlow does not currently provide Python 3.14 wheels)
+numpy==2.5.3
+opencv-python==5.0.0.93
+Pillow==12.3.0
+pyserial==3.5
+scipy==1.18.1
+scikit-image==0.26.0
+scikit-learn==1.9.1
+tensorflow==2.21.0
