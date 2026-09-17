@@ -18,6 +18,10 @@ import numpy as np
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk
+from ui_theme import (
+    COLORS as C, FONT, MONO_FONT, button as themed_button, card as themed_card,
+    configure_ttk, section_label, set_button_role, status_dot,
+)
 
 try:
     from .calibration_math import estimate_planar_pose, reprojection_metrics, scale_camera_matrix
@@ -27,20 +31,20 @@ except ImportError:
 
 WINDOW_WIDTH = 1366
 WINDOW_HEIGHT = 768
-TITLE_BAR_HEIGHT = 38
+TITLE_BAR_HEIGHT = 44
 
-BG = "#1e293b"
-PANEL = "#334155"
-TITLE_BG = "#0f172a"
-CANVAS_BG = "#020617"
-TEXT = "#f8fafc"
-MUTED = "#94a3b8"
-CYAN = "#22d3ee"
-BLUE = "#3b82f6"
-GREEN = "#10b981"
-AMBER = "#f59e0b"
-RED = "#f43f5e"
-PURPLE = "#8b5cf6"
+BG = C["bg"]
+PANEL = C["card"]
+TITLE_BG = C["surface"]
+CANVAS_BG = C["camera"]
+TEXT = C["text"]
+MUTED = C["muted"]
+CYAN = C["accent"]
+BLUE = C["blue"]
+GREEN = C["accent_dark"]
+AMBER = C["warning"]
+RED = C["danger"]
+PURPLE = C["purple"]
 
 SQUARE_LENGTH_MM = CONFIG['board']['square_length_mm']
 MARKER_LENGTH_MM = CONFIG['board']['marker_length_mm']
@@ -69,6 +73,7 @@ class CalibrationApp:
         self.closed = False
         self.preview_job = None
         self.starting_camera = False
+        self.ui_style = configure_ttk(self.root)
         if host is None:
             self.root.overrideredirect(True)
             self.root.configure(bg=BG)
@@ -117,28 +122,25 @@ class CalibrationApp:
         )
 
     def _button(self, parent, text, command, color=BLUE, width=16, state=tk.NORMAL):
-        return tk.Button(
-            parent, text=text, command=command, bg=color, fg="white",
-            activebackground=color, activeforeground="white",
-            disabledforeground="#cbd5e1", relief=tk.FLAT, bd=0,
-            width=width, height=2, cursor="hand2",
-            font=("Segoe UI", 11, "bold"), state=state,
-        )
+        role = {BLUE: "blue", GREEN: "primary", RED: "danger", PURPLE: "purple"}.get(
+            color, "secondary")
+        return themed_button(parent, text, command, role=role, width=width,
+                             state=state, font_size=10, pady=9)
 
     def _create_ui(self):
         self._create_title_bar()
         body = tk.Frame(self.host, bg=BG)
-        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 14))
+        body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(14, 16))
 
         heading = tk.Frame(body, bg=BG)
-        heading.pack(fill=tk.X, pady=(0, 10))
+        heading.pack(fill=tk.X, pady=(0, 12))
         tk.Label(heading, text="Camera Setup", bg=BG, fg=TEXT,
-                 font=("Segoe UI", 24, "bold")).pack(side=tk.LEFT)
+                 font=(FONT, 26, "bold")).pack(side=tk.LEFT)
         tk.Label(
             heading,
             text="Simple guided setup for accurate camera measurement",
-            bg=BG, fg=MUTED, font=("Segoe UI", 11),
-        ).pack(side=tk.LEFT, padx=18, pady=(8, 0))
+            bg=BG, fg=MUTED, font=(FONT, 10),
+        ).pack(side=tk.LEFT, padx=16, pady=(9, 0))
 
         stage_row = tk.Frame(body, bg=BG)
         stage_row.pack(fill=tk.X, pady=(0, 10))
@@ -148,8 +150,9 @@ class CalibrationApp:
             (3, "Check camera"), (4, "Save surface"),
         ):
             label = tk.Label(
-                stage_row, text=f" {number}  {title} ", bg=PANEL, fg=MUTED,
-                font=("Segoe UI", 10, "bold"), padx=12, pady=7,
+                stage_row, text=f"{number}   {title}", bg=C["surface_2"], fg=MUTED,
+                font=(FONT, 9, "bold"), padx=14, pady=8,
+                highlightbackground=C["border"], highlightthickness=1,
             )
             label.pack(side=tk.LEFT, padx=(0, 8))
             self.stage_labels.append(label)
@@ -160,16 +163,17 @@ class CalibrationApp:
         workspace.columnconfigure(1, weight=0, minsize=410)
         workspace.rowconfigure(0, weight=1)
 
-        preview_card = tk.Frame(workspace, bg=PANEL, highlightbackground="#475569", highlightthickness=1)
+        preview_card = themed_card(workspace, bg=C["surface"])
         preview_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         preview_card.pack_propagate(False)
-        preview_header = tk.Frame(preview_card, bg=PANEL)
-        preview_header.pack(fill=tk.X, padx=12, pady=9)
-        tk.Label(preview_header, text="LIVE CAMERA", bg=PANEL, fg=CYAN,
-                 font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
+        preview_header = tk.Frame(preview_card, bg=C["surface"])
+        preview_header.pack(fill=tk.X, padx=14, pady=10)
+        status_dot(preview_header).pack(side=tk.LEFT, padx=(0, 7))
+        tk.Label(preview_header, text="CAMERA PREVIEW", bg=C["surface"], fg=C["text_soft"],
+                 font=(FONT, 9, "bold")).pack(side=tk.LEFT)
         self.resolution_label = tk.Label(
-            preview_header, text="No camera connected", bg=PANEL, fg=MUTED,
-            font=("Segoe UI", 10),
+            preview_header, text="No camera connected", bg=C["surface"], fg=MUTED,
+            font=(FONT, 9),
         )
         self.resolution_label.pack(side=tk.RIGHT)
         # The viewport owns the available space; image requests cannot resize it.
@@ -177,25 +181,24 @@ class CalibrationApp:
         viewport.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.video_label = tk.Label(
             viewport, text="Select a camera and start the live feed",
-            bg=CANVAS_BG, fg=MUTED, font=("Segoe UI", 16), bd=0,
+            bg=CANVAS_BG, fg=MUTED, font=(FONT, 14), bd=0,
             highlightthickness=0, padx=0, pady=0,
         )
         self.video_label.place(x=0, y=0, relwidth=1, relheight=1)
 
-        controls = tk.Frame(workspace, bg=PANEL, width=410)
+        controls = themed_card(workspace, bg=PANEL, width=410)
         controls.grid(row=0, column=1, sticky="nsew")
         controls.pack_propagate(False)
         self.status_banner = tk.Label(
-            controls, text="Select a camera below", bg=TITLE_BG, fg=CYAN,
-            wraplength=360, justify=tk.LEFT, font=("Segoe UI", 12, "bold"),
+            controls, text="Select a camera below", bg=C["surface_2"], fg=CYAN,
+            wraplength=360, justify=tk.LEFT, font=(FONT, 11, "bold"),
             padx=14, pady=12,
         )
         self.status_banner.pack(fill=tk.X, padx=12, pady=12)
 
         camera_box = tk.Frame(controls, bg=PANEL)
         camera_box.pack(fill=tk.X, padx=12)
-        tk.Label(camera_box, text="1. SELECT CAMERA", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        section_label(camera_box, "1  Select camera").pack(anchor="w")
         cam_buttons = tk.Frame(camera_box, bg=PANEL)
         cam_buttons.pack(fill=tk.X, pady=6)
         self.btn_cam0 = self._button(cam_buttons, f"CAMERA {CAMERA_IDS[0]}", lambda: self.select_camera(CAMERA_IDS[0]), GREEN, 13)
@@ -208,20 +211,17 @@ class CalibrationApp:
         self.start_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
         self.stop_btn = self._button(stream_buttons, "STOP", self.stop_camera, RED, 9, tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=(4, 0))
-        tk.Frame(controls, bg="#475569", height=1).pack(fill=tk.X, padx=12)
+        tk.Frame(controls, bg=C["border"], height=1).pack(fill=tk.X, padx=12)
 
         capture_box = tk.Frame(controls, bg=PANEL)
         capture_box.pack(fill=tk.X, padx=12, pady=10)
-        tk.Label(capture_box, text="2. CAMERA SETUP PHOTOS", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        section_label(capture_box, "2  Setup photos").pack(anchor="w")
         self.capture_info = tk.Label(
             capture_box, text=f"0 / {NUM_CAPTURES} accepted", bg=PANEL, fg=TEXT,
-            font=("Segoe UI", 15, "bold"),
+            font=(FONT, 15, "bold"),
         )
         self.capture_info.pack(anchor="w", pady=(4, 2))
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure(
+        self.ui_style.configure(
             "Calibration.Horizontal.TProgressbar", troughcolor=TITLE_BG,
             background=PURPLE, bordercolor=PANEL, lightcolor=PURPLE,
             darkcolor=PURPLE, thickness=8,
@@ -240,22 +240,22 @@ class CalibrationApp:
             capture_box,
             text="Move and tilt the board after each photo. Show it in different parts of the camera view.",
             bg=PANEL, fg=MUTED, wraplength=370, justify=tk.LEFT,
-            font=("Segoe UI", 9),
+            font=(FONT, 9),
         ).pack(anchor="w", pady=(5, 0))
 
-        plane_box = tk.Frame(controls, bg=TITLE_BG, highlightbackground=PURPLE, highlightthickness=1)
+        plane_box = tk.Frame(controls, bg=C["surface_2"], highlightbackground=C["border_strong"], highlightthickness=1)
         plane_box.pack(fill=tk.X, padx=12, pady=(0, 10))
-        tk.Label(plane_box, text="4. MEASUREMENT SURFACE", bg=TITLE_BG, fg=PURPLE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
+        tk.Label(plane_box, text="4  MEASUREMENT SURFACE", bg=C["surface_2"], fg=PURPLE,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
         tk.Label(
             plane_box, text="Place board flat on measurement surface",
-            bg=TITLE_BG, fg=TEXT, font=("Segoe UI", 12, "bold"),
+            bg=C["surface_2"], fg=TEXT, font=(FONT, 11, "bold"),
         ).pack(anchor="w", padx=10)
         tk.Label(
             plane_box,
             text="Keep the camera fixed. The board must be fully flat at the same height as the product.",
-            bg=TITLE_BG, fg=MUTED, wraplength=360, justify=tk.LEFT,
-            font=("Segoe UI", 9),
+            bg=C["surface_2"], fg=MUTED, wraplength=360, justify=tk.LEFT,
+            font=(FONT, 9),
         ).pack(anchor="w", padx=10, pady=(3, 7))
         self.extrinsic_btn = self._button(
             plane_box, "SAVE MEASUREMENT SURFACE", self.capture_extrinsic_reference,
@@ -265,12 +265,11 @@ class CalibrationApp:
 
         log_box = tk.Frame(controls, bg=PANEL)
         log_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        tk.Label(log_box, text="STATUS LOG", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        section_label(log_box, "Activity").pack(anchor="w")
         self.status_text = scrolledtext.ScrolledText(
-            log_box, height=7, bg=TITLE_BG, fg="#cbd5e1",
+            log_box, height=7, bg=TITLE_BG, fg=C["text_soft"],
             insertbackground="white", relief=tk.FLAT,
-            font=("Consolas", 9), wrap=tk.WORD,
+            font=(MONO_FONT, 9), wrap=tk.WORD,
         )
         self.status_text.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self.status_text.configure(state=tk.DISABLED)
@@ -278,29 +277,21 @@ class CalibrationApp:
         self.log("Keep the board clear, flat and well lit.")
 
     def _create_title_bar(self):
-        title_bar = tk.Frame(self.host, bg=TITLE_BG, height=TITLE_BAR_HEIGHT)
+        title_bar = tk.Frame(self.host, bg=TITLE_BG, height=TITLE_BAR_HEIGHT,
+                             highlightbackground=C["border"], highlightthickness=1)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
         if self.on_close is not None:
-            tk.Button(
-                title_bar, text="← Back to dashboard", command=self.on_closing,
-                bg=TITLE_BG, fg=CYAN, relief=tk.FLAT, bd=0,
-                padx=12, font=("Segoe UI", 11, "bold"),
-            ).pack(side=tk.LEFT, fill=tk.Y)
+            themed_button(title_bar, "←  DASHBOARD", self.on_closing, role="quiet",
+                          padx=16, pady=6).pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(
-            title_bar, text="Industrial Vision Dashboard  /  Camera Setup",
-            bg=TITLE_BG, fg=MUTED, font=("Segoe UI", 11),
-        ).pack(side=tk.LEFT, padx=10)
-        tk.Button(
-            title_bar, text="✕", command=self.on_closing, bg=TITLE_BG, fg="white",
-            activebackground="#e11d48", relief=tk.FLAT, bd=0, padx=12,
-            font=("Segoe UI", 12),
-        ).pack(side=tk.RIGHT, fill=tk.Y)
-        tk.Button(
-            title_bar, text="—", command=self.minimize_window, bg=TITLE_BG, fg="white",
-            activebackground="#475569", relief=tk.FLAT, bd=0, padx=12,
-            font=("Segoe UI", 12),
-        ).pack(side=tk.RIGHT, fill=tk.Y)
+            title_bar, text="CAMERA SETUP", bg=TITLE_BG, fg=MUTED,
+            font=(FONT, 10, "bold"),
+        ).pack(side=tk.LEFT, padx=12)
+        themed_button(title_bar, "✕", self.on_closing, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
+        themed_button(title_bar, "—", self.minimize_window, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
         title_bar.bind("<ButtonPress-1>", self._start_move)
         title_bar.bind("<B1-Motion>", self._do_move)
 
@@ -339,11 +330,11 @@ class CalibrationApp:
         }.get(self.stage, 0)
         for index, label in enumerate(self.stage_labels):
             if index < stage_index:
-                label.configure(bg="#065f46", fg="#d1fae5")
+                label.configure(bg=C["success_dark"], fg=C["text"])
             elif index == stage_index:
-                label.configure(bg=PURPLE, fg="white")
+                label.configure(bg="#7558D6", fg="white")
             else:
-                label.configure(bg=PANEL, fg=MUTED)
+                label.configure(bg=C["surface_2"], fg=MUTED)
         self.capture_btn.configure(
             state=tk.NORMAL if self.camera_running and self.stage == "capture" else tk.DISABLED
         )
@@ -376,10 +367,8 @@ class CalibrationApp:
         self.calibration_image_size = None
         self.capture_info.configure(text=f"0 / {NUM_CAPTURES} accepted")
         self.progress["value"] = 0
-        self.btn_cam0.configure(relief=tk.SUNKEN if index == CAMERA_IDS[0] else tk.FLAT,
-                                bg=GREEN if index == CAMERA_IDS[0] else "#047857")
-        self.btn_cam1.configure(relief=tk.SUNKEN if index == CAMERA_IDS[1] else tk.FLAT,
-                                bg=BLUE if index == CAMERA_IDS[1] else "#1d4ed8")
+        set_button_role(self.btn_cam0, "selected" if index == CAMERA_IDS[0] else "secondary")
+        set_button_role(self.btn_cam1, "selected" if index == CAMERA_IDS[1] else "secondary")
         self.start_btn.configure(state=tk.NORMAL)
         self._set_status(f"Camera {index} selected — start the live feed")
         self.log(f"Selected Camera {index}")
