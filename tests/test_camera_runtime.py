@@ -1,0 +1,131 @@
+import time
+import unittest
+from pathlib import Path
+from uuid import uuid4
+from unittest.mock import patch
+import numpy as np
+import cv2
+from app_config import CONFIG
+from camera_handler import CameraStream, CameraHandler
+
+
+class Device:
+    def __init__(self, *args):
+        self.properties = {}
+        self.released = False
+
+    def isOpened(self): return True
+    def set(self, key, value): self.properties[key] = value
+    def read(self):
+        time.sleep(0.005)
+        spec = CONFIG['cameras'][0]
+        return True, np.zeros((spec['height'], spec['width'], 3), dtype=np.uint8)
+    def release(self): self.released = True
+
+
+class CaptureTests(unittest.TestCase):
+    def setUp(self):
+        self.cache_path = Path(__file__).parent / f'.camera_cache_{uuid4().hex}.json'
+        self.cache_patch = patch(
+            'camera_handler.RESOLUTION_CACHE_PATH', self.cache_path)
+        self.cache_patch.start()
+
+    def tearDown(self):
+        self.cache_patch.stop()
+        self.cache_path.unlink(missing_ok=True)
+        self.cache_path.with_suffix('.json.tmp').unlink(missing_ok=True)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_full_resolution_and_device_settings(self, _):
+        spec = CONFIG['cameras'][0]
+        stream = CameraStream(spec['index'])
+        try:
+            ok, frame = stream.read()
+            self.assertTrue(ok)
+            self.assertEqual(frame.shape[:2], (spec['height'], spec['width']))
+            self.assertEqual(stream.cap.properties[cv2.CAP_PROP_FRAME_WIDTH], spec['width'])
+            self.assertEqual(stream.cap.properties[cv2.CAP_PROP_FRAME_HEIGHT], spec['height'])
+        finally:
+            stream.release()
+            stream.thread.join(1)
+        self.assertTrue(stream.cap.released)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    @patch.object(Device, 'read', return_value=(True, np.zeros((2, 2, 3), dtype=np.uint8)))
+    def test_unsupported_resolution_continues_with_warning(self, *_):
+        stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            self.assertEqual(stream.size, (2, 2))
+            self.assertIn('Requested:', stream.resolution_warning)
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    def test_fallback_selects_highest_actual_mode(self):
+        class NegotiatingDevice(Device):
+            def read(self):
+                time.sleep(0.001)
+                width = self.properties.get(cv2.CAP_PROP_FRAME_WIDTH)
+                # Simulate a driver that returns 720p for the requested mode
+                # but supports 1080p when that mode is requested explicitly.
+                size = (1920, 1080) if width == 1920 else (1280, 720)
+                return True, np.zeros((size[1], size[0], 3), np.uint8)
+        with patch('camera_handler.cv2.VideoCapture', side_effect=NegotiatingDevice):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+            try:
+                self.assertEqual(stream.size, (1920, 1080))
+                self.assertIn('1920 x 1080', stream.resolution_warning)
+                self.assertEqual(stream.read()[1].shape[:2], (1080, 1920))
+            finally:
+                stream.release()
+                stream.thread.join(1)
+
+    def test_second_start_uses_cached_resolution_without_scanning(self):
+        class NegotiatingDevice(Device):
+            instances = []
+
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.width_requests = []
+                self.instances.append(self)
+
+            def set(self, key, value):
+                super().set(key, value)
+                if key == cv2.CAP_PROP_FRAME_WIDTH:
+                    self.width_requests.append(value)
+
+            def read(self):
+                width = self.properties.get(cv2.CAP_PROP_FRAME_WIDTH)
+                size = (1920, 1080) if width == 1920 else (1280, 720)
+                return True, np.zeros((size[1], size[0], 3), np.uint8)
+
+        with patch('camera_handler.cv2.VideoCapture', side_effect=NegotiatingDevice):
+            first = CameraStream(CONFIG['cameras'][0]['index'])
+            first.release()
+            first.thread.join(1)
+            second = CameraStream(CONFIG['cameras'][0]['index'])
+            try:
+                self.assertGreater(len(NegotiatingDevice.instances[0].width_requests), 1)
+                self.assertEqual(NegotiatingDevice.instances[1].width_requests, [1920])
+                self.assertEqual(second.size, (1920, 1080))
+                self.assertIn('Best available size found', second.resolution_warning)
+            finally:
+                second.release()
+                second.thread.join(1)
+
+    @patch('camera_handler.CameraStream')
+    @patch('camera_handler.ImageUndistorter')
+    def test_preview_does_not_undistort_and_processing_keeps_original(self, undistorter, stream):
+        original = np.zeros((800, 1200, 3), dtype=np.uint8)
+        stream.return_value.read.return_value = True, original
+        handler = CameraHandler(CONFIG['cameras'][0]['index'], 'test.json')
+        handler.read_frame()
+        undistorter.return_value.undistort.assert_not_called()
+        self.assertIs(handler.get_raw_frame(), original)
+        handler.get_undistorted_frame()
+        handler.get_undistorted_frame()
+        undistorter.return_value.undistort.assert_called_once_with(original)
+
+
+if __name__ == '__main__':
+    unittest.main()

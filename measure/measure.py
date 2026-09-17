@@ -27,8 +27,11 @@ class CylinderWidthMeasurer:
         with open(calibration_path, 'r') as f:
             calib_data = json.load(f)
         
-        self.camera_matrix = np.array(calib_data['camera_matrix'], dtype=np.float64)
+        self.base_camera_matrix = np.array(calib_data['camera_matrix'], dtype=np.float64)
+        self.camera_matrix = self.base_camera_matrix.copy()
         self.dist_coeffs = np.array(calib_data['dist_coeffs'], dtype=np.float64)
+        image_size = calib_data.get('image_size')
+        self.calibration_image_size = tuple(image_size) if image_size else None
         
         # Load camera extrinsics
         with open(extrinsics_path, 'r') as f:
@@ -45,6 +48,17 @@ class CylinderWidthMeasurer:
         self.n_segments = n_segments
         self.cut_ratio = cut_ratio
         self.box_alpha = box_alpha
+
+    def _set_working_image_size(self, width, height):
+        self.camera_matrix = self.base_camera_matrix.copy()
+        if self.calibration_image_size:
+            calibrated_width, calibrated_height = self.calibration_image_size
+            scale_x = width / calibrated_width
+            scale_y = height / calibrated_height
+            self.camera_matrix[0, 0] *= scale_x
+            self.camera_matrix[0, 2] *= scale_x
+            self.camera_matrix[1, 1] *= scale_y
+            self.camera_matrix[1, 2] *= scale_y
 
     # ------------------------------------------------------------
     # Convert pixel point → real world (mm)
@@ -287,6 +301,7 @@ class CylinderWidthMeasurer:
         """
         output = image.copy()
         overlay = image.copy()
+        self._set_working_image_size(image.shape[1], image.shape[0])
 
         objects = self.fast_regression_lines_from_mask(mask)
 

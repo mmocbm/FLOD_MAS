@@ -75,8 +75,11 @@ class LinearFeatureInspectorOptimized:
         with open(calibration_path, 'r') as f:
             calib_data = json.load(f)
 
-        self.camera_matrix = np.array(calib_data['camera_matrix'], dtype=np.float64)
+        self.base_camera_matrix = np.array(calib_data['camera_matrix'], dtype=np.float64)
+        self.camera_matrix = self.base_camera_matrix.copy()
         self.dist_coeffs = np.array(calib_data['dist_coeffs'], dtype=np.float64)
+        image_size = calib_data.get('image_size')
+        self.calibration_image_size = tuple(image_size) if image_size else None
 
         with open(extrinsics_path, 'r') as f:
             extrin_data = json.load(f)
@@ -97,6 +100,19 @@ class LinearFeatureInspectorOptimized:
 
         print("\n[SUCCESS] Initialization complete!")
         print("="*80 + "\n")
+
+    def _set_working_image_size(self, width, height):
+        """Scale intrinsics when runtime resolution differs from calibration."""
+        self.camera_matrix = self.base_camera_matrix.copy()
+        if self.calibration_image_size:
+            calibrated_width, calibrated_height = self.calibration_image_size
+            scale_x = width / calibrated_width
+            scale_y = height / calibrated_height
+            self.camera_matrix[0, 0] *= scale_x
+            self.camera_matrix[0, 2] *= scale_x
+            self.camera_matrix[1, 1] *= scale_y
+            self.camera_matrix[1, 2] *= scale_y
+        self.camera_matrix_inv = np.linalg.inv(self.camera_matrix)
 
     def _start_timer(self, name):
         if self.profile:
@@ -603,6 +619,9 @@ class LinearFeatureInspectorOptimized:
 
     def inspect(self, original_bgr, mask_gray):
         t_total = self._start_timer("TotalInspection")
+
+        height, width = original_bgr.shape[:2]
+        self._set_working_image_size(width, height)
 
         if self.debug:
             print("\n" + "="*80)

@@ -10,6 +10,10 @@ Usage:
 """
 
 import cv2
+try:
+    from .runtime_config import CONFIG, project_path
+except ImportError:
+    from runtime_config import CONFIG, project_path
 import numpy as np
 import json
 
@@ -20,14 +24,14 @@ IMAGE_PATH = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\captures\cam1\20260214_2
 
 
 # ChArUco board parameters (must match calibration)
-SQUARE_LENGTH = 15  # mm
-MARKER_LENGTH = 11  # mm
-SQUARES_X = 11
-SQUARES_Y = 17
+SQUARE_LENGTH = CONFIG['board']['square_length_mm']
+MARKER_LENGTH = CONFIG['board']['marker_length_mm']
+SQUARES_X = CONFIG['board']['squares_x']
+SQUARES_Y = CONFIG['board']['squares_y']
 
 # Calibration files
-CALIB_FILE = "Files\camera_calibration_1.json"
-EXTRINSICS_FILE = "Files\camera_extrinsics_1.json"
+CALIB_FILE = project_path(CONFIG['cameras'][1]['calibration_file'])
+EXTRINSICS_FILE = project_path(CONFIG['cameras'][1]['extrinsics_file'])
 
 # ======================================================================
 
@@ -99,7 +103,7 @@ def main():
     print(f"✓ Loaded extrinsics")
     
     # Initialize detector
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG['board']['dictionary']))
     board = cv2.aruco.CharucoBoard(
         (SQUARES_X, SQUARES_Y),
         SQUARE_LENGTH / 1000,

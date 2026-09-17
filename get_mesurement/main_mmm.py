@@ -13,6 +13,7 @@ from measure.measure import CylinderWidthMeasurer
 from camera_handler import CameraHandler
 import datetime
 import sys
+from app_config import CONFIG, project_path
 from Image_Processing.get_mask import SkeletonSegmentationPredictor
 from get_mesurement.measure_real import LinearFeatureInspectorOptimized
 
@@ -24,12 +25,9 @@ BOTTOM_PANEL_HEIGHT = 120
 TITLE_BAR_HEIGHT = 30
 
 # Camera configuration
-CAMERA_INDEX_1 = 0
-CAMERA_INDEX_2 = 1
-CALIB_FILE_1 = r"Files\camera_calibration_0.json"
-CALIB_FILE_2 = r"Files\camera_calibration_1.json"
-Extrinsics_FILE_1 = r"Files\camera_extrinsics_0.json"
-Extrinsics_FILE_2 = r"Files\camera_extrinsics_1.json"
+CAMERA_INDEX_1, CAMERA_INDEX_2 = [c['index'] for c in CONFIG['cameras']]
+CALIB_FILE_1, CALIB_FILE_2 = [project_path(c['calibration_file']) for c in CONFIG['cameras']]
+Extrinsics_FILE_1, Extrinsics_FILE_2 = [project_path(c['extrinsics_file']) for c in CONFIG['cameras']]
 
 # Model path
 MODEL_PATH = r"unet\models\unet_AllAptern_CoveerdMask.h5"

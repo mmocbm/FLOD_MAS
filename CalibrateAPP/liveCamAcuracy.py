@@ -1,4 +1,8 @@
 import cv2
+try:
+    from .runtime_config import CONFIG, project_path
+except ImportError:
+    from runtime_config import CONFIG, project_path
 import numpy as np
 import json
 import tkinter as tk
@@ -9,19 +13,19 @@ import os
 
 # ================= CONFIG =================
 
-CAMERA_INDEX = 0
+CAMERA_INDEX = CONFIG['cameras'][0]['index']
 UI_WIDTH = 1024
 UI_HEIGHT = 600
 PREVIEW_HEIGHT = UI_HEIGHT - 120
 
 # ChArUco board parameters
-SQUARE_LENGTH = 15  # mm
-MARKER_LENGTH = 11  # mm
-SQUARES_X = 11
-SQUARES_Y = 17
+SQUARE_LENGTH = CONFIG['board']['square_length_mm']
+MARKER_LENGTH = CONFIG['board']['marker_length_mm']
+SQUARES_X = CONFIG['board']['squares_x']
+SQUARES_Y = CONFIG['board']['squares_y']
 
-CALIB_FILE = "Files/camera_calibration_0.json"
-EXTRINSICS_FILE = "Files/camera_extrinsics_0.json"
+CALIB_FILE = project_path(CONFIG['cameras'][0]['calibration_file'])
+EXTRINSICS_FILE = project_path(CONFIG['cameras'][0]['extrinsics_file'])
 
 OUTPUT_DIR = "results"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -121,7 +125,7 @@ class CharucoApp:
 
     def init_charuco(self):
         aruco_dict = cv2.aruco.getPredefinedDictionary(
-            cv2.aruco.DICT_5X5_1000
+            getattr(cv2.aruco, CONFIG['board']['dictionary'])
         )
         self.board = cv2.aruco.CharucoBoard(
             (SQUARES_X, SQUARES_Y),
@@ -132,11 +136,8 @@ class CharucoApp:
         self.detector = cv2.aruco.CharucoDetector(self.board)
 
     def open_camera(self):
-        self.cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-
-        # Force maximum resolution
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+        from camera_handler import CameraStream
+        self.cap = CameraStream(CAMERA_INDEX)
 
         if not self.cap.isOpened():
             raise RuntimeError("Camera not opened")

@@ -4,15 +4,19 @@ Computes the pose (rotation and translation) of the ChArUco board reference plan
 """
 
 import cv2
+try:
+    from .runtime_config import CONFIG, project_path
+except ImportError:
+    from runtime_config import CONFIG, project_path
 import numpy as np
 import json
 import os
 
 # Board parameters (must match intrinsics calibration)
-SQUARE_LENGTH = 16  # mm
-MARKER_LENGTH = 12  # mm
-SQUARES_X = 11
-SQUARES_Y = 9
+SQUARE_LENGTH = CONFIG['board']['square_length_mm']
+MARKER_LENGTH = CONFIG['board']['marker_length_mm']
+SQUARES_X = CONFIG['board']['squares_x']
+SQUARES_Y = CONFIG['board']['squares_y']
 
 # Paths
 CALIB_FILE = "camera_calibration.json"
@@ -51,7 +55,7 @@ def calibrate_extrinsics():
     print(f"  Image size: {ref_image.shape[1]} x {ref_image.shape[0]}\n")
     
     # Initialize detector
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG['board']['dictionary']))
     board = cv2.aruco.CharucoBoard(
         (SQUARES_X, SQUARES_Y), 
         SQUARE_LENGTH / 1000, 

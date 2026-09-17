@@ -4,6 +4,10 @@ Detects ChArUco boards in images and computes camera matrix and distortion coeff
 """
 
 import cv2
+try:
+    from .runtime_config import CONFIG, project_path
+except ImportError:
+    from runtime_config import CONFIG, project_path
 import numpy as np
 import json
 import glob
@@ -11,10 +15,10 @@ import os
 from pathlib import Path
 
 # Board parameters (in mm)
-SQUARE_LENGTH = 16  # mm
-MARKER_LENGTH = 12  # mm
-SQUARES_X = 11
-SQUARES_Y = 9
+SQUARE_LENGTH = CONFIG['board']['square_length_mm']
+MARKER_LENGTH = CONFIG['board']['marker_length_mm']
+SQUARES_X = CONFIG['board']['squares_x']
+SQUARES_Y = CONFIG['board']['squares_y']
 
 # Paths
 CALIB_IMAGES_FOLDER = "temp_calibration_images"  # Folder with calibration images
@@ -28,7 +32,7 @@ def calibrate_camera():
     print("="*70)
     
     # Initialize ArUco dictionary and ChArUco board
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG['board']['dictionary']))
     board = cv2.aruco.CharucoBoard(
         (SQUARES_X, SQUARES_Y), 
         SQUARE_LENGTH / 1000,  # Convert to meters

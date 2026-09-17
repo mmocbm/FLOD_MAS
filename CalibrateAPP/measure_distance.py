@@ -4,6 +4,10 @@ Interactive GUI for selecting points on undistorted images and measuring real-wo
 """
 
 import cv2
+try:
+    from .runtime_config import CONFIG, project_path
+except ImportError:
+    from runtime_config import CONFIG, project_path
 import numpy as np
 import json
 import os
@@ -12,10 +16,10 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 
 # Board parameters (must match calibration)
-SQUARE_LENGTH = 15  # mm
-MARKER_LENGTH = 11  # mm
-SQUARES_X = 11
-SQUARES_Y = 17
+SQUARE_LENGTH = CONFIG['board']['square_length_mm']
+MARKER_LENGTH = CONFIG['board']['marker_length_mm']
+SQUARES_X = CONFIG['board']['squares_x']
+SQUARES_Y = CONFIG['board']['squares_y']
 
 # Calibration files
 CALIB_FILE = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\Files\camera_calibration_0.json"

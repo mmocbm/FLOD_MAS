@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import threading
 import os
 import time
@@ -11,7 +11,10 @@ import numpy as np
 from camera_handler import CameraHandler
 import datetime
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from app_config import CONFIG, project_path
 from Image_Processing.color_mask_generator import ColorMaskGenerator
+from CalibrateAPP.calibration_ui import CalibrationApp
 
 try:
     import serial
@@ -25,19 +28,16 @@ BOTTOM_PANEL_HEIGHT = 100
 TITLE_BAR_HEIGHT = 38
 
 # Serial Configuration
-SERIAL_PORT = "COM22"
-BAUD_RATE = 9600
+SERIAL_PORT = CONFIG['serial']['port']
+BAUD_RATE = CONFIG['serial']['baud_rate']
 
 # Camera configuration
-CAMERA_INDEX_1 = 0
-CAMERA_INDEX_2 = 1
-CALIB_FILE_1 = r"Files\camera_calibration_0.json"
-CALIB_FILE_2 = r"Files\camera_calibration_1.json"
-Extrinsics_FILE_1 = r"Files\camera_extrinsics_0.json"
-Extrinsics_FILE_2 = r"Files\camera_extrinsics_1.json"
+CAMERA_INDEX_1, CAMERA_INDEX_2 = [c['index'] for c in CONFIG['cameras']]
+CALIB_FILE_1, CALIB_FILE_2 = [project_path(c['calibration_file']) for c in CONFIG['cameras']]
+Extrinsics_FILE_1, Extrinsics_FILE_2 = [project_path(c['extrinsics_file']) for c in CONFIG['cameras']]
 
 # Fixed sizes only (no patterns)
-FIXED_SIZES = ["L", "M", "S", "XL", "XS"]
+FIXED_SIZES = CONFIG['inspection']['sizes']
 
 def get_initial_fit_scale(pil_image, frame_width, frame_height):
     img_ratio = pil_image.width / pil_image.height
@@ -82,15 +82,15 @@ class IndustrialDashboard:
         self.maximized_camera = None  # None, 1, or 2
 
         # --- settings variables ---
-        self.n_segments_var = tk.IntVar(value=3)          # default 3 segments (unused now)
+        self.n_segments_var = tk.IntVar(value=CONFIG['inspection']['segments'])
         self.size_var = tk.StringVar()
-        self.len_threshold_var = tk.StringVar(value="± 1mm")
-        self.wid_threshold_var = tk.StringVar(value="± 1mm")
+        self.len_threshold_var = tk.StringVar(value=CONFIG['inspection']['length_tolerance'])
+        self.wid_threshold_var = tk.StringVar(value=CONFIG['inspection']['width_tolerance'])
         self.strip_width_var = tk.StringVar(value="2")
         self.enable_check_var = tk.BooleanVar(value=True)
 
         # Set default size
-        self.size_var.set("M")
+        self.size_var.set(CONFIG['inspection']['default_size'])
         self.available_sizes = FIXED_SIZES
 
         # --- active (saved) values used during detection ---
@@ -123,6 +123,8 @@ class IndustrialDashboard:
     # helpers
     # ==============================================================
     def _init_serial(self):
+        if not CONFIG['serial']['enabled']:
+            return
         if serial is None:
             print("pyserial is not installed. Serial features disabled.")
             return
@@ -191,6 +193,12 @@ class IndustrialDashboard:
         self.title_bar.bind("<B1-Motion>", self._do_move)
 
     def close_application(self):
+        self._closing = True
+        for future in getattr(self, '_camera_futures', []):
+            def release_when_ready(done):
+                if not done.cancelled() and done.exception() is None:
+                    done.result().release()
+            future.add_done_callback(release_when_ready)
         self.video_streaming = False
         if getattr(self, "serial_conn", None) and self.serial_conn.is_open:
             self.serial_conn.close()
@@ -326,35 +334,50 @@ class IndustrialDashboard:
                      "relief": tk.FLAT, "width": 25, "height": 3}
 
         tk.Button(container, text="Size Setting",      command=self.open_size_window,      **btn_style).pack(pady=10)
-        tk.Button(container, text="Camera Calibration",   command=self.run_external_calibration, **btn_style).pack(pady=10)
+        tk.Button(container, text="Camera Setup", command=self.open_camera_setup, **btn_style).pack(pady=10)
 
-    def run_external_calibration(self):
-        """Launches external calibration app and relaunches main after it closes."""
+    def open_camera_setup(self):
+        """Show setup inside the existing dashboard window and event loop."""
+        if getattr(self, 'calibration_page', None) is not None:
+            return
         self.video_streaming = False
-        if self.camera1: self.camera1.release()
-        if self.camera2: self.camera2.release()
-
-        calib_script = os.path.join(os.getcwd(), "CalibrateAPP", "calibration_ui.py")
-
-        def monitor_and_restart():
-            try:
-                subprocess.run([sys.executable, calib_script], check=False)
-                print("Calibration finished. Relaunching main app...")
-                subprocess.Popen([sys.executable] + sys.argv)
-                os._exit(0)
-            except Exception as e:
-                print(f"Error in monitor_and_restart: {e}")
-                self.root.after(0, self.root.deiconify)
-
+        if getattr(self, '_video_job', None) is not None:
+            self.root.after_cancel(self._video_job)
+            self._video_job = None
+        # Keep the streams open; setup borrows the same full-resolution devices.
+        if hasattr(self, 'sel_win') and self.sel_win.winfo_exists():
+            self.sel_win.destroy()
+        self.title_bar.pack_forget()
+        self.main_frame.pack_forget()
+        self.calibration_page = tk.Frame(self.root, bg="#1e293b")
+        self.calibration_page.pack(fill=tk.BOTH, expand=True)
+        self.root.deiconify()
         try:
-            threading.Thread(target=monitor_and_restart, daemon=True).start()
-            self.root.withdraw()
-            if hasattr(self, 'sel_win'): 
-                self.sel_win.destroy()
+            self.calibration_app = CalibrationApp(
+                self.root, host=self.calibration_page, on_close=self.close_camera_setup,
+                camera_provider=self._setup_camera_stream,
+            )
         except Exception as e:
-            print(f"Error launching calibration app: {e}")
-            self._show_error_popup(f"Could not open calibration app:\n{e}")
-            self.root.deiconify()
+            self.close_camera_setup()
+            self._show_error_popup(f"Could not open camera setup:\n{e}")
+
+    def close_camera_setup(self):
+        """Return immediately; keep devices open and reload saved calibration."""
+        if getattr(self, 'calibration_page', None) is not None:
+            self.calibration_page.destroy()
+        self.calibration_page = None
+        self.calibration_app = None
+        self.title_bar.pack(side=tk.TOP, fill=tk.X)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        if self.camera1: self.camera1.reload_calibration()
+        if self.camera2: self.camera2.reload_calibration()
+        self.start_video_stream()
+
+    def _setup_camera_stream(self, index):
+        for camera in (self.camera1, self.camera2):
+            if camera is not None and camera.camera_index == index:
+                return camera.stream
+        raise RuntimeError("Camera is still starting or unavailable. Return to the dashboard and try again.")
 
     # --------------------------------------------------------------
     # Size window (replaces pattern window)
@@ -940,22 +963,51 @@ class IndustrialDashboard:
     # video streaming – using raw frames
     # ==============================================================
     def start_video_stream(self):
-        try:
-            self.camera1 = CameraHandler(CAMERA_INDEX_1, CALIB_FILE_1)
-            self.camera2 = CameraHandler(CAMERA_INDEX_2, CALIB_FILE_2)
-
+        if self.camera1 is not None and self.camera2 is not None:
             self.video_streaming = True
             self.video_paused = False
+            self.set_pass_fail("LIVE")
+            self.update_progress(100, "Live Feed")
             self.update_video_feed()
+            return
+        if getattr(self, '_camera_starting', False):
+            return
+        self._camera_starting = True
+        self.update_progress(0, "Starting cameras…")
+        self.set_pass_fail("STARTING")
+        executor = ThreadPoolExecutor(max_workers=2)
+        futures = [executor.submit(CameraHandler, index, path) for index, path in
+                   ((CAMERA_INDEX_1, CALIB_FILE_1), (CAMERA_INDEX_2, CALIB_FILE_2))]
+        self._camera_futures = futures
+        executor.shutdown(wait=False)
 
-        except Exception as e:
-            print(f"Video init error: {e}")
+        def finish():
+            if not all(f.done() for f in futures):
+                self.root.after(50, finish)
+                return
+            self._camera_starting = False
+            cameras, errors = [], []
+            for future in futures:
+                try:
+                    cameras.append(future.result())
+                except Exception as error:
+                    errors.append(str(error))
+            if errors or getattr(self, '_closing', False):
+                for camera in cameras: camera.release()
+                if not getattr(self, '_closing', False):
+                    self.set_pass_fail("CAMERA ERROR")
+                    self.update_progress(0, " | ".join(errors))
+                return
+            self.camera1, self.camera2 = cameras
+            if getattr(self, 'calibration_page', None) is None:
+                self.start_video_stream()
+        self.root.after(50, finish)
 
     def update_video_feed(self):
         if not self.video_streaming:
             return
         if self.video_paused:
-            self.root.after(30, self.update_video_feed)
+            self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
             return
 
         # Read frames from both cameras (we need both to keep them alive)
@@ -988,7 +1040,7 @@ class IndustrialDashboard:
                     else:
                         self._display_video_frame(raw2, 2)
 
-        self.root.after(30, self.update_video_feed)
+        self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
 
     def _display_video_frame(self, frame, canvas_num):
         """Display a frame on the specified canvas, automatically resizing to canvas size."""
@@ -1013,7 +1065,10 @@ class IndustrialDashboard:
                 cw = (WINDOW_WIDTH // 2) - 10
                 ch = WINDOW_HEIGHT - TITLE_BAR_HEIGHT - BOTTOM_PANEL_HEIGHT - 40
 
-        frame_resized = cv2.resize(frame, (cw, ch))
+        preview_scale = min(1.0, CONFIG['preview']['max_width'] / cw,
+                            CONFIG['preview']['max_height'] / ch)
+        frame_resized = cv2.resize(frame, (max(1, int(cw * preview_scale)),
+                                          max(1, int(ch * preview_scale))))
         pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
 
         if canvas_num == 1:
@@ -1041,6 +1096,10 @@ class IndustrialDashboard:
     # detection trigger – with maximize & highlight
     # ==============================================================
     def start_detect_thread(self, side):
+        if getattr(self, 'calibration_page', None) is not None:
+            return
+        if self.camera1 is None or self.camera2 is None:
+            return
         if self.detect_btn_L['state'] == tk.DISABLED:
             return  # Prevent overlapping detections
             
@@ -1280,8 +1339,6 @@ def main():
     def load_initial():
         app.update_progress(0, "Initializing cameras…")
         app.start_video_stream()
-        app.update_progress(100, "Live Feed")
-        app.set_pass_fail("LIVE")
 
     # ------------------------------------------------------------------
     def reset_system():

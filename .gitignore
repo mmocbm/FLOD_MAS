@@ -32,6 +32,8 @@ Dataset_Capture/
 Dataset_capture/
 temp_calibration_images/
 results/
+Files/camera_resolution_cache.json
+Files/camera_resolution_cache.json.tmp
 
 # Packaging output
 build/

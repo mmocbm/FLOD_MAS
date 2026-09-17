@@ -1,13 +1,14 @@
 import cv2
 import numpy as np
+from app_config import CONFIG
 
 class ColorMaskGenerator:
     """Class to manage region-based color mask generation."""
     
-    def __init__(self, hue_range=10, sat_range=80, val_range=80):
-        self.hue_range = hue_range
-        self.sat_range = sat_range
-        self.val_range = val_range
+    def __init__(self, hue_range=None, sat_range=None, val_range=None):
+        self.hue_range = CONFIG['color_mask']['hue_range'] if hue_range is None else hue_range
+        self.sat_range = CONFIG['color_mask']['saturation_range'] if sat_range is None else sat_range
+        self.val_range = CONFIG['color_mask']['value_range'] if val_range is None else val_range
 
     def get_color_from_point(self, hsv_frame, point):
         """Returns the H, S, V values of a specific point."""

@@ -13,6 +13,7 @@ class ImageUndistorter:
         self.calib_file_path = calib_file_path
         self.camera_matrix = None
         self.dist_coeffs = None
+        self.calibration_image_size = None
 
         self._load_calibration()
 
@@ -20,7 +21,7 @@ class ImageUndistorter:
         """Load camera matrix and distortion coefficients"""
 
         if not os.path.exists(self.calib_file_path):
-            raise FileNotFoundError(f"❌ Calibration file not found: {self.calib_file_path}")
+            raise FileNotFoundError(f"Calibration file not found: {self.calib_file_path}")
 
         with open(self.calib_file_path, "r") as f:
             calib = json.load(f)
@@ -33,7 +34,10 @@ class ImageUndistorter:
             calib["dist_coeffs"], dtype=np.float64
         )
 
-        print("✅ Calibration loaded:", self.calib_file_path)
+        image_size = calib.get("image_size")
+        if image_size and len(image_size) == 2:
+            self.calibration_image_size = (int(image_size[0]), int(image_size[1]))
+
 
     def undistort(self, image, crop=False):
         """
@@ -53,16 +57,29 @@ class ImageUndistorter:
             img = cv2.imread(image)
 
             if img is None:
-                raise ValueError(f"❌ Cannot read image: {image}")
+                raise ValueError(f"Cannot read image: {image}")
 
         else:
             img = image
 
-        # Apply undistortion (NO cropping, NO new camera matrix)
+        height, width = img.shape[:2]
+        camera_matrix = self.camera_matrix.copy()
+        if self.calibration_image_size:
+            calibrated_width, calibrated_height = self.calibration_image_size
+            scale_x = width / calibrated_width
+            scale_y = height / calibrated_height
+            camera_matrix[0, 0] *= scale_x
+            camera_matrix[0, 2] *= scale_x
+            camera_matrix[1, 1] *= scale_y
+            camera_matrix[1, 2] *= scale_y
+
+        # Keep the same scaled intrinsic matrix in the output image.
         undistorted = cv2.undistort(
             img,
-            self.camera_matrix,
-            self.dist_coeffs
+            camera_matrix,
+            self.dist_coeffs,
+            None,
+            camera_matrix,
         )
 
         return undistorted
@@ -87,14 +104,14 @@ if __name__ == "__main__":
         image_bgr = cv2.imread(INPUT_IMAGE)
 
         if image_bgr is None:
-            raise FileNotFoundError(f"❌ Cannot read image: {INPUT_IMAGE}")
+            raise FileNotFoundError(f"Cannot read image: {INPUT_IMAGE}")
 
         # Undistort
         result = undistorter.undistort(image_bgr)
 
         # Save result
         cv2.imwrite(OUTPUT_IMAGE, result)
-        print("✅ Saved:", OUTPUT_IMAGE)
+        print("Saved:", OUTPUT_IMAGE)
 
         # Show result
         cv2.imshow("Undistorted Image", result)
@@ -103,4 +120,4 @@ if __name__ == "__main__":
         cv2.destroyAllWindows()
 
     except Exception as e:
-        print("❌ Error:", e)
+        print("Error:", e)
