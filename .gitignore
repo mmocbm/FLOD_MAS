@@ -34,6 +34,7 @@ temp_calibration_images/
 results/
 Files/camera_resolution_cache.json
 Files/camera_resolution_cache.json.tmp
+tests/ui_preview.png
 
 # Packaging output
 build/

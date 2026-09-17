@@ -15,6 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
 from Image_Processing.color_mask_generator import ColorMaskGenerator
 from CalibrateAPP.calibration_ui import CalibrationApp
+from ui_theme import (
+    COLORS as C, FONT, button as themed_button, card as themed_card,
+    configure_ttk, section_label, set_button_role, status_dot,
+)
 
 try:
     import serial
@@ -24,8 +28,8 @@ except ImportError:
 # ---------------- CONFIG ----------------
 WINDOW_WIDTH = 1366
 WINDOW_HEIGHT = 768
-BOTTOM_PANEL_HEIGHT = 100
-TITLE_BAR_HEIGHT = 38
+BOTTOM_PANEL_HEIGHT = 118
+TITLE_BAR_HEIGHT = 44
 
 # Serial Configuration
 SERIAL_PORT = CONFIG['serial']['port']
@@ -114,7 +118,8 @@ class IndustrialDashboard:
         x = (screen_width // 2) - (WINDOW_WIDTH // 2)
         y = (screen_height // 2) - (WINDOW_HEIGHT // 2)
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{y}")
-        self.root.configure(bg="#1e293b")
+        self.root.configure(bg=C["bg"])
+        self.ui_style = configure_ttk(self.root)
 
         self._create_custom_title_bar()
         self._create_layout()
@@ -179,16 +184,21 @@ class IndustrialDashboard:
     # title-bar / window management
     # ==============================================================
     def _create_custom_title_bar(self):
-        self.title_bar = tk.Frame(self.root, bg="#0f172a", height=TITLE_BAR_HEIGHT)
+        self.title_bar = tk.Frame(self.root, bg=C["surface"], height=TITLE_BAR_HEIGHT,
+                                  highlightbackground=C["border"], highlightthickness=1)
         self.title_bar.pack(side=tk.TOP, fill=tk.X)
-        tk.Label(self.title_bar, text="Industrial Vision Dashboard",
-                 fg="#94a3b8", bg="#0f172a", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=10)
-        tk.Button(self.title_bar, text="✕", command=self.close_application,
-                  bg="#0f172a", fg="white", bd=0, padx=12, pady=5, font=("Segoe UI", 12),
-                  activebackground="#e11d48").pack(side=tk.RIGHT, fill=tk.Y)
-        tk.Button(self.title_bar, text="—", command=self.minimize_window,
-                  bg="#0f172a", fg="white", bd=0, padx=12, pady=5, font=("Segoe UI", 12),
-                  activebackground="#475569").pack(side=tk.RIGHT, fill=tk.Y)
+        self.title_bar.pack_propagate(False)
+        brand = tk.Frame(self.title_bar, bg=C["surface"])
+        brand.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
+        tk.Frame(brand, bg=C["accent"], width=4, height=22).pack(side=tk.LEFT, pady=10)
+        tk.Label(brand, text="VISION INSPECTION", fg=C["text"], bg=C["surface"],
+                 font=(FONT, 11, "bold")).pack(side=tk.LEFT, padx=(10, 8))
+        tk.Label(brand, text="Production console", fg=C["muted"], bg=C["surface"],
+                 font=(FONT, 9)).pack(side=tk.LEFT)
+        themed_button(self.title_bar, "✕", self.close_application, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
+        themed_button(self.title_bar, "—", self.minimize_window, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
         self.title_bar.bind("<ButtonPress-1>", self._start_move)
         self.title_bar.bind("<B1-Motion>", self._do_move)
 
@@ -229,7 +239,7 @@ class IndustrialDashboard:
     # layout
     # ==============================================================
     def _create_layout(self):
-        self.main_frame = tk.Frame(self.root, bg="#1e293b")
+        self.main_frame = tk.Frame(self.root, bg=C["bg"])
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         self._create_image_panel()
         self._create_bottom_panel()
@@ -238,69 +248,69 @@ class IndustrialDashboard:
     # bottom panel
     # --------------------------------------------------------------
     def _create_bottom_panel(self):
-        self.bottom_panel = tk.Frame(self.main_frame, height=BOTTOM_PANEL_HEIGHT, bg="#334155")
+        self.bottom_panel = tk.Frame(
+            self.main_frame, height=BOTTOM_PANEL_HEIGHT, bg=C["surface"],
+            highlightbackground=C["border"], highlightthickness=1,
+        )
         self.bottom_panel.pack(side=tk.BOTTOM, fill=tk.X)
         self.bottom_panel.pack_propagate(False)
 
         # ---- left: size display only ----
-        left_section = tk.Frame(self.bottom_panel, bg="#334155")
-        left_section.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        left_section = tk.Frame(self.bottom_panel, bg=C["surface"])
+        left_section.pack(side=tk.LEFT, fill=tk.Y, padx=(18, 12), pady=13)
 
         # Large size display
         self.lbl_large_size = tk.Label(
             left_section,
-            text=f"Size: {self.active_size}",
-            fg="#22d3ee", bg="#334155",
-            font=("Segoe UI", 26, "bold")
+            text=self.active_size,
+            fg=C["text"], bg=C["surface"],
+            font=(FONT, 28, "bold")
         )
-        self.lbl_large_size.pack(anchor="w")
+        tk.Label(left_section, text="ACTIVE SIZE", fg=C["muted"], bg=C["surface"],
+                 font=(FONT, 8, "bold")).pack(anchor="w")
+        self.lbl_large_size.pack(anchor="w", pady=(0, 1))
 
         self.session_time_label = tk.Label(
             left_section,
             text="",
-            fg="#f8fafc", bg="#334155",
-            font=("Segoe UI", 18, "bold")
+            fg=C["muted"], bg=C["surface"],
+            font=(FONT, 9)
         )
         self.session_time_label.pack(anchor="w", pady=(2, 0))
 
         # ---- center: status label (LIVE) ----
-        center_section = tk.Frame(self.bottom_panel, bg="#334155")
-        center_section.pack(side=tk.LEFT, padx=20)
-        self.status_result_label = tk.Label(center_section, text="LIVE", fg="#22d3ee", bg="#334155",
-                                            font=("Segoe UI", 26, "bold"))
-        self.status_result_label.pack(pady=10)
+        center_section = themed_card(self.bottom_panel, bg=C["surface_2"])
+        center_section.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=13)
+        status_head = tk.Frame(center_section, bg=C["surface_2"])
+        status_head.pack(fill=tk.X, padx=16, pady=(10, 0))
+        status_dot(status_head).pack(side=tk.LEFT, padx=(0, 7))
+        tk.Label(status_head, text="SYSTEM STATUS", fg=C["muted"], bg=C["surface_2"],
+                 font=(FONT, 8, "bold")).pack(side=tk.LEFT)
+        self.status_result_label = tk.Label(
+            center_section, text="LIVE", fg=C["accent"], bg=C["surface_2"],
+            font=(FONT, 20, "bold"), width=9, anchor="w",
+        )
+        self.status_result_label.pack(fill=tk.X, padx=16, pady=(2, 8))
 
         # ---- right: buttons ----
-        right_section = tk.Frame(self.bottom_panel, bg="#334155")
-        right_section.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=5)
-
-        btn_font = ("Segoe UI", 11, "bold")
-        btn_font_large = ("Segoe UI", 13, "bold")
-
-        self.btn_container = tk.Frame(right_section, bg="#334155")
+        right_section = tk.Frame(self.bottom_panel, bg=C["surface"])
+        right_section.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 16), pady=13)
+        self.btn_container = tk.Frame(right_section, bg=C["surface"])
         self.btn_container.pack(expand=True)
-
-        # Settings button
-        tk.Button(self.btn_container, text="Settings", font=btn_font_large, bg="#64748b", fg="white",
-                  relief=tk.FLAT, width=10, height=2,
-                  command=self.open_settings_selector).pack(side=tk.LEFT, padx=3)
-
-        # Reset button
-        tk.Button(self.btn_container, text="RESET", font=btn_font_large, bg="#f43f5e", fg="white",
-                  relief=tk.FLAT, width=10, height=2,
-                  command=self.on_reset_callback).pack(side=tk.LEFT, padx=3)
-
-        # Camera L button (left)
-        self.detect_btn_L = tk.Button(self.btn_container, text="Camera L", font=btn_font_large,
-                                      bg="#3b82f6", fg="white", relief=tk.FLAT,
-                                      width=10, height=2, command=lambda: self.start_detect_thread("L"))
-        self.detect_btn_L.pack(side=tk.LEFT, padx=3)
-
-        # Camera R button (right)
-        self.detect_btn_R = tk.Button(self.btn_container, text="Camera R", font=btn_font_large,
-                                      bg="#3b82f6", fg="white", relief=tk.FLAT,
-                                      width=10, height=2, command=lambda: self.start_detect_thread("R"))
-        self.detect_btn_R.pack(side=tk.LEFT, padx=3)
+        themed_button(self.btn_container, "SETTINGS", self.open_settings_selector,
+                      role="secondary", width=11, pady=15).pack(side=tk.LEFT, padx=4)
+        themed_button(self.btn_container, "RESET", self.on_reset_callback,
+                      role="danger", width=9, pady=15).pack(side=tk.LEFT, padx=4)
+        self.detect_btn_L = themed_button(
+            self.btn_container, "INSPECT LEFT", lambda: self.start_detect_thread("L"),
+            role="blue", width=13, pady=15,
+        )
+        self.detect_btn_L.pack(side=tk.LEFT, padx=4)
+        self.detect_btn_R = themed_button(
+            self.btn_container, "INSPECT RIGHT", lambda: self.start_detect_thread("R"),
+            role="blue", width=13, pady=15,
+        )
+        self.detect_btn_R.pack(side=tk.LEFT, padx=4)
 
     # ==============================================================
     # settings windows
@@ -311,30 +321,65 @@ class IndustrialDashboard:
 
         self.sel_win = tk.Toplevel(self.root)
         self.sel_win.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        self.sel_win.configure(bg="#1e293b")
+        self.sel_win.configure(bg=C["bg"])
         self.sel_win.overrideredirect(True)
         self.sel_win.attributes("-topmost", True)
 
-        header = tk.Frame(self.sel_win, bg="#0f172a", height=TITLE_BAR_HEIGHT)
+        header = tk.Frame(self.sel_win, bg=C["surface"], height=TITLE_BAR_HEIGHT,
+                          highlightbackground=C["border"], highlightthickness=1)
         header.pack(fill=tk.X)
-        tk.Button(header, text="🏠 Home",
-                  command=lambda: [self.sel_win.destroy(), self.root.deiconify(), self.resume_video()],
-                  bg="#0f172a", fg="#22d3ee", bd=0, padx=15, font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, fill=tk.Y)
-        tk.Label(header, text="Configuration Selector", fg="#94a3b8", bg="#0f172a", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=10)
-        tk.Button(header, text="✕", command=self.close_application, bg="#0f172a", fg="white", bd=0, padx=12, font=("Segoe UI", 12)).pack(side=tk.RIGHT, fill=tk.Y)
+        header.pack_propagate(False)
+        themed_button(
+            header, "←  DASHBOARD",
+            lambda: [self.sel_win.destroy(), self.root.deiconify(), self.resume_video()],
+            role="quiet", padx=16, pady=6,
+        ).pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(header, text="SYSTEM SETTINGS", fg=C["muted"], bg=C["surface"],
+                 font=(FONT, 10, "bold")).pack(side=tk.LEFT, padx=12)
+        themed_button(header, "✕", self.close_application, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
         header.bind("<ButtonPress-1>", self._start_move)
         header.bind("<B1-Motion>", self._do_move)
 
-        container = tk.Frame(self.sel_win, bg="#1e293b")
-        container.pack(expand=True)
-        tk.Label(container, text="System Settings", fg="white", bg="#1e293b",
-                 font=("Segoe UI", 32, "bold")).pack(pady=40)
+        container = tk.Frame(self.sel_win, bg=C["bg"])
+        container.pack(fill=tk.BOTH, expand=True, padx=72, pady=54)
+        tk.Label(container, text="System settings", fg=C["text"], bg=C["bg"],
+                 font=(FONT, 30, "bold")).pack(anchor="w")
+        tk.Label(
+            container, text="Choose what you want to prepare before inspection.",
+            fg=C["muted"], bg=C["bg"], font=(FONT, 12),
+        ).pack(anchor="w", pady=(5, 30))
 
-        btn_style = {"font": ("Segoe UI", 18, "bold"), "bg": "#475569", "fg": "white",
-                     "relief": tk.FLAT, "width": 25, "height": 3}
+        choices = tk.Frame(container, bg=C["bg"])
+        choices.pack(fill=tk.X)
+        for column in range(2):
+            choices.columnconfigure(column, weight=1, uniform="settings")
 
-        tk.Button(container, text="Size Setting",      command=self.open_size_window,      **btn_style).pack(pady=10)
-        tk.Button(container, text="Camera Setup", command=self.open_camera_setup, **btn_style).pack(pady=10)
+        size_card = themed_card(choices)
+        size_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        section_label(size_card, "Inspection profile").pack(anchor="w", padx=24, pady=(24, 8))
+        tk.Label(size_card, text="Size & limits", fg=C["text"], bg=C["card"],
+                 font=(FONT, 22, "bold")).pack(anchor="w", padx=24)
+        tk.Label(
+            size_card, text="Select the product size, allowed variation, segments, and color mask.",
+            fg=C["muted"], bg=C["card"], font=(FONT, 11), justify=tk.LEFT,
+            wraplength=430,
+        ).pack(anchor="w", padx=24, pady=(8, 30))
+        themed_button(size_card, "OPEN SIZE SETTINGS  →", self.open_size_window,
+                      role="primary").pack(anchor="w", padx=24, pady=(0, 24))
+
+        camera_card = themed_card(choices)
+        camera_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        section_label(camera_card, "Measurement quality").pack(anchor="w", padx=24, pady=(24, 8))
+        tk.Label(camera_card, text="Camera setup", fg=C["text"], bg=C["card"],
+                 font=(FONT, 22, "bold")).pack(anchor="w", padx=24)
+        tk.Label(
+            camera_card, text="Prepare each camera and save the flat measurement surface.",
+            fg=C["muted"], bg=C["card"], font=(FONT, 11), justify=tk.LEFT,
+            wraplength=430,
+        ).pack(anchor="w", padx=24, pady=(8, 30))
+        themed_button(camera_card, "OPEN CAMERA SETUP  →", self.open_camera_setup,
+                      role="blue").pack(anchor="w", padx=24, pady=(0, 24))
 
     def open_camera_setup(self):
         """Show setup inside the existing dashboard window and event loop."""
@@ -349,7 +394,7 @@ class IndustrialDashboard:
             self.sel_win.destroy()
         self.title_bar.pack_forget()
         self.main_frame.pack_forget()
-        self.calibration_page = tk.Frame(self.root, bg="#1e293b")
+        self.calibration_page = tk.Frame(self.root, bg=C["bg"])
         self.calibration_page.pack(fill=tk.BOTH, expand=True)
         self.root.deiconify()
         try:
@@ -387,146 +432,117 @@ class IndustrialDashboard:
 
         self.size_win = tk.Toplevel(self.root)
         self.size_win.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        self.size_win.configure(bg="#1e293b")
+        self.size_win.configure(bg=C["bg"])
         self.size_win.overrideredirect(True)
         self.size_win.attributes("-topmost", True)
 
-        # ================= HEADER =================
-        header = tk.Frame(self.size_win, bg="#0f172a", height=TITLE_BAR_HEIGHT)
+        header = tk.Frame(self.size_win, bg=C["surface"], height=TITLE_BAR_HEIGHT,
+                          highlightbackground=C["border"], highlightthickness=1)
         header.pack(fill=tk.X)
-
-        tk.Button(
-            header, text="← Back",
+        header.pack_propagate(False)
+        themed_button(
+            header, "←  SETTINGS",
             command=lambda: [self.size_win.destroy(), self.open_settings_selector()],
-            bg="#0f172a", fg="#22d3ee", bd=0, padx=15,
-            font=("Segoe UI", 11, "bold")
-        ).pack(side=tk.LEFT)
-
+            role="quiet", padx=16, pady=6,
+        ).pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(
-            header, text="Size Setting",
-            fg="#94a3b8", bg="#0f172a",
-            font=("Segoe UI", 11)
+            header, text="INSPECTION PROFILE",
+            fg=C["muted"], bg=C["surface"], font=(FONT, 10, "bold"),
         ).pack(side=tk.LEFT, padx=10)
+        themed_button(header, "✕", self.close_application, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
 
-        tk.Button(
-            header, text="✕",
-            command=self.close_application,
-            bg="#0f172a", fg="white", bd=0, padx=12, font=("Segoe UI", 12)
-        ).pack(side=tk.RIGHT)
-
-        # ================= CONTENT =================
-        content = tk.Frame(self.size_win, bg="#1e293b")
-        content.pack(expand=True, fill=tk.BOTH, padx=40, pady=30)
-
-        # ---------- SIZE ----------
+        content = tk.Frame(self.size_win, bg=C["bg"])
+        content.pack(expand=True, fill=tk.BOTH, padx=54, pady=30)
         tk.Label(
-            content, text="Select Size",
-            fg="#22d3ee", bg="#1e293b",
-            font=("Segoe UI", 18, "bold")
-        ).pack(anchor="w", pady=(15, 10))
+            content, text="Inspection profile", fg=C["text"], bg=C["bg"],
+            font=(FONT, 28, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            content, text="Set the product size and allowed measurement variation.",
+            fg=C["muted"], bg=C["bg"], font=(FONT, 11),
+        ).pack(anchor="w", pady=(4, 20))
 
-        size_frame = tk.Frame(content, bg="#1e293b")
-        size_frame.pack(anchor="w")
+        size_card = themed_card(content)
+        size_card.pack(fill=tk.X)
+        section_label(size_card, "Product size").pack(anchor="w", padx=20, pady=(17, 4))
+        tk.Label(size_card, text="Choose the size being inspected", fg=C["text_soft"],
+                 bg=C["card"], font=(FONT, 10)).pack(anchor="w", padx=20)
+        size_frame = tk.Frame(size_card, bg=C["card"])
+        size_frame.pack(fill=tk.X, padx=16, pady=(10, 17))
 
         self._size_buttons = {}
         for size in FIXED_SIZES:
-            btn = tk.Button(
-                size_frame,
-                text=size,
-                width=10,
-                height=2,
-                bg="#047857",
-                fg="white",
-                relief=tk.FLAT,
-                font=("Segoe UI", 13, "bold"),
-                command=lambda s=size: self._select_size(s)
+            btn = themed_button(
+                size_frame, size, lambda s=size: self._select_size(s),
+                role="secondary", width=9, font_size=13, pady=12,
             )
-            btn.pack(side=tk.LEFT, padx=10, pady=10)
+            btn.pack(side=tk.LEFT, padx=4)
             self._size_buttons[size] = btn
 
-        # ---------- SETTINGS (keep for future use) ----------
-        settings = tk.Frame(content, bg="#1e293b")
-        settings.pack(fill=tk.X, pady=30)
+        settings = themed_card(content)
+        settings.pack(fill=tk.X, pady=14)
+        for column in range(3):
+            settings.columnconfigure(column, weight=1, uniform="limits")
+        section_label(settings, "Measurement limits").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(17, 12))
 
-        tk.Label(settings, text="Length Tolerance", fg="#94a3b8", bg="#1e293b", font=("Segoe UI", 12)).grid(row=0, column=0, sticky="w")
+        label_options = {"fg": C["text_soft"], "bg": C["card"], "font": (FONT, 10, "bold")}
+        tk.Label(settings, text="Length variation", **label_options).grid(row=1, column=0, sticky="w", padx=20)
         self.len_tolerance_menu = tk.OptionMenu(
             settings, self.len_threshold_var,
             "± 0.5mm", "± 1mm", "± 1.5mm", "± 2mm", "± 2.5mm", "± 3mm", "± 3.5mm", "± 4mm", "± 4.5mm", "± 5mm", "± 10mm"
         )
-        self.len_tolerance_menu.config(bg="#475569", fg="white", font=("Segoe UI", 12), relief=tk.FLAT)
-        self.len_tolerance_menu["menu"].config(bg="#475569", fg="white", font=("Segoe UI", 12))
-        self.len_tolerance_menu.grid(row=1, column=0, padx=10, sticky="w")
+        self.len_tolerance_menu.config(bg=C["surface_2"], fg=C["text"], activebackground=C["card_hover"],
+                                       activeforeground=C["text"], font=(FONT, 11), relief=tk.FLAT,
+                                       highlightthickness=1, highlightbackground=C["border"], width=18)
+        self.len_tolerance_menu["menu"].config(bg=C["surface_2"], fg=C["text"], font=(FONT, 11))
+        self.len_tolerance_menu.grid(row=2, column=0, padx=20, pady=(7, 20), sticky="ew")
 
-        tk.Label(settings, text="Width Tolerance", fg="#94a3b8", bg="#1e293b", font=("Segoe UI", 12)).grid(row=0, column=1, sticky="w")
+        tk.Label(settings, text="Width variation", **label_options).grid(row=1, column=1, sticky="w", padx=20)
         self.wid_tolerance_menu = tk.OptionMenu(
             settings, self.wid_threshold_var,
             "± 0.5mm", "± 1mm", "± 1.5mm", "± 2mm", "± 2.5mm", "± 3mm", "± 3.5mm", "± 4mm", "± 4.5mm", "± 5mm", "± 10mm"
         )
-        self.wid_tolerance_menu.config(bg="#475569", fg="white", font=("Segoe UI", 12), relief=tk.FLAT)
-        self.wid_tolerance_menu["menu"].config(bg="#475569", fg="white", font=("Segoe UI", 12))
-        self.wid_tolerance_menu.grid(row=1, column=1, padx=10, sticky="w")
+        self.wid_tolerance_menu.config(bg=C["surface_2"], fg=C["text"], activebackground=C["card_hover"],
+                                       activeforeground=C["text"], font=(FONT, 11), relief=tk.FLAT,
+                                       highlightthickness=1, highlightbackground=C["border"], width=18)
+        self.wid_tolerance_menu["menu"].config(bg=C["surface_2"], fg=C["text"], font=(FONT, 11))
+        self.wid_tolerance_menu.grid(row=2, column=1, padx=20, pady=(7, 20), sticky="ew")
 
-        tk.Label(settings, text="Segments", fg="#94a3b8", bg="#1e293b", font=("Segoe UI", 12)).grid(row=0, column=2, sticky="w")
+        tk.Label(settings, text="Measurement segments", **label_options).grid(row=1, column=2, sticky="w", padx=20)
         self.segments_combo = ttk.Combobox(
             settings,
             values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"],
             state="readonly",
-            width=10,
-            font=("Segoe UI", 12)
+            font=(FONT, 11), style="App.TCombobox",
         )
         self.segments_combo.set(str(self.n_segments_var.get()))
-        self.segments_combo.grid(row=1, column=2, padx=10, sticky="w")
+        self.segments_combo.grid(row=2, column=2, padx=20, pady=(7, 20), sticky="ew")
         self.segments_combo.bind("<<ComboboxSelected>>", lambda e: self.n_segments_var.set(int(self.segments_combo.get())))
 
-        tk.Checkbutton(
-            content,
-            text="Enable Inspect (PASS / FAIL)",
+        footer = tk.Frame(content, bg=C["bg"])
+        footer.pack(fill=tk.X, pady=(4, 0))
+        check = tk.Checkbutton(
+            footer, text="Use PASS / FAIL checking",
             variable=self.enable_check_var,
-            bg="#1e293b",
-            fg="white",
-            selectcolor="#475569",
-            font=("Segoe UI", 14, "bold")
-        ).pack(anchor="w", pady=20)
+            bg=C["bg"], fg=C["text_soft"], activebackground=C["bg"],
+            activeforeground=C["text"], selectcolor=C["surface_2"],
+            font=(FONT, 11, "bold"), bd=0, highlightthickness=0,
+        )
+        check.pack(side=tk.LEFT)
+        themed_button(footer, "COLOR MASK", self.open_mask_setup_window,
+                      role="purple", width=13).pack(side=tk.RIGHT, padx=(8, 0))
+        themed_button(footer, "SAVE PROFILE", self.save_settings,
+                      role="primary", width=14).pack(side=tk.RIGHT)
 
-        # ---------- ACTION BUTTONS ----------
-        btn_frame = tk.Frame(content, bg="#1e293b")
-        btn_frame.pack(pady=25)
-
-        tk.Button(
-            btn_frame,
-            text="Mask Setup",
-            bg="#8b5cf6",
-            fg="white",
-            font=("Segoe UI", 14, "bold"),
-            width=14,
-            height=2,
-            relief=tk.FLAT,
-            command=self.open_mask_setup_window
-        ).pack(side=tk.LEFT, padx=10)
-
-        tk.Button(
-            btn_frame,
-            text="SAVE",
-            bg="#3b82f6",
-            fg="white",
-            font=("Segoe UI", 14, "bold"),
-            width=14,
-            height=2,
-            relief=tk.FLAT,
-            command=self.save_settings
-        ).pack(side=tk.LEFT, padx=10)
-
-        # ---------- DEFAULT HIGHLIGHT ----------
         self._select_size(self.size_var.get())
 
     # ---------- Helper methods for size buttons ----------
     def _select_size(self, size):
         self.size_var.set(size)
         for s, btn in self._size_buttons.items():
-            btn.config(
-                bg="#10b981" if s == size else "#047857",
-                fg="white"
-            )
+            set_button_role(btn, "selected" if s == size else "secondary")
 
     def save_settings(self):
         strip_value = self.strip_width_var.get()
@@ -544,7 +560,7 @@ class IndustrialDashboard:
         self.active_enable_check      = self.enable_check_var.get()
 
         # Refresh bottom-panel display
-        self.lbl_large_size.config(text=f"Size: {self.active_size}")
+        self.lbl_large_size.config(text=self.active_size)
         
         self.session_start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.session_time_label.config(text=f"Session Start: {self.session_start_time}")
@@ -555,55 +571,55 @@ class IndustrialDashboard:
         pop = tk.Toplevel(self.size_win)
         pop.overrideredirect(True)
         pop.attributes("-topmost", True)
-        pop.configure(bg="#334155")
+        pop.configure(bg=C["card"], highlightbackground=C["border_strong"], highlightthickness=1)
 
         px = self.size_win.winfo_x() + (WINDOW_WIDTH // 2) - 160
         py = self.size_win.winfo_y() + (WINDOW_HEIGHT // 2) - 80
         pop.geometry(f"320x160+{px}+{py}")
 
-        tk.Label(pop, text="✓", fg="#10b981", bg="#334155", font=("Segoe UI", 36)).pack(pady=(15, 0))
-        tk.Label(pop, text="Settings Saved Successfully", fg="white", bg="#334155",
-                 font=("Segoe UI", 13, "bold")).pack()
+        tk.Label(pop, text="✓", fg=C["success"], bg=C["card"], font=(FONT, 32, "bold")).pack(pady=(14, 0))
+        tk.Label(pop, text="Profile saved", fg=C["text"], bg=C["card"],
+                 font=(FONT, 13, "bold")).pack()
 
         def close_pop():
             pop.destroy()
             self.size_win.destroy()
             self.open_settings_selector()
 
-        tk.Button(pop, text="OK", bg="#64748b", fg="white", relief=tk.FLAT, width=10, command=close_pop).pack(pady=15)
+        themed_button(pop, "DONE", close_pop, role="primary", width=10, pady=7).pack(pady=14)
 
     def _show_error_popup(self, message):
         pop = tk.Toplevel(self.root)
         pop.overrideredirect(True)
         pop.attributes("-topmost", True)
-        pop.configure(bg="#334155")
+        pop.configure(bg=C["card"], highlightbackground=C["border_strong"], highlightthickness=1)
 
         px = self.root.winfo_x() + (WINDOW_WIDTH // 2) - 225
         py = self.root.winfo_y() + (WINDOW_HEIGHT // 2) - 140
         pop.geometry(f"450x280+{px}+{py}")
 
-        title_bar = tk.Frame(pop, bg="#0f172a", height=38)
+        title_bar = tk.Frame(pop, bg=C["surface"], height=38)
         title_bar.pack(fill=tk.X)
         title_bar.pack_propagate(False)
-        tk.Label(title_bar, text="Error", fg="#94a3b8", bg="#0f172a", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=10)
-        tk.Button(title_bar, text="✕", command=pop.destroy,
-                  bg="#0f172a", fg="white", bd=0, padx=10, pady=5,
-                  font=("Segoe UI", 10), activebackground="#e11d48").pack(side=tk.RIGHT, fill=tk.Y)
+        tk.Label(title_bar, text="ACTION NEEDED", fg=C["muted"], bg=C["surface"],
+                 font=(FONT, 9, "bold")).pack(side=tk.LEFT, padx=12)
+        themed_button(title_bar, "✕", pop.destroy, role="quiet", padx=12,
+                      pady=4).pack(side=tk.RIGHT, fill=tk.Y)
 
-        content_frame = tk.Frame(pop, bg="#334155")
+        content_frame = tk.Frame(pop, bg=C["card"])
         content_frame.pack(fill=tk.BOTH, expand=True, pady=15)
-        tk.Label(content_frame, text="⚠",      fg="#ef4444", bg="#334155", font=("Segoe UI", 56)).pack(pady=(15, 10))
-        tk.Label(content_frame, text=message,  fg="white",   bg="#334155", font=("Segoe UI", 18, "bold")).pack(pady=(5, 20))
+        tk.Label(content_frame, text="!", fg=C["danger"], bg=C["card"],
+                 font=(FONT, 36, "bold")).pack(pady=(10, 4))
+        tk.Label(content_frame, text=message, fg=C["text"], bg=C["card"],
+                 font=(FONT, 14, "bold"), wraplength=390).pack(pady=(2, 18))
 
-        btn_frame = tk.Frame(content_frame, bg="#334155")
+        btn_frame = tk.Frame(content_frame, bg=C["card"])
         btn_frame.pack(pady=(0, 15))
 
-        tk.Button(btn_frame, text="Go to Settings", bg="#3b82f6", fg="white",
-                  relief=tk.FLAT, width=16, height=2, font=("Segoe UI", 12, "bold"),
-                  command=lambda: [pop.destroy(), self.open_settings_selector()]).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="OK", bg="#64748b", fg="white",
-                  relief=tk.FLAT, width=14, height=2, font=("Segoe UI", 12),
-                  command=pop.destroy).pack(side=tk.LEFT, padx=5)
+        themed_button(btn_frame, "OPEN SETTINGS", lambda: [pop.destroy(), self.open_settings_selector()],
+                      role="blue", width=15).pack(side=tk.LEFT, padx=5)
+        themed_button(btn_frame, "CLOSE", pop.destroy, role="secondary",
+                      width=11).pack(side=tk.LEFT, padx=5)
 
     def resume_video(self):
         self.video_paused = False
@@ -613,7 +629,7 @@ class IndustrialDashboard:
 
         self.mask_win = tk.Toplevel(self.root)
         self.mask_win.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        self.mask_win.configure(bg="#1e293b")
+        self.mask_win.configure(bg=C["bg"])
         self.mask_win.overrideredirect(True)
         self.mask_win.attributes("-topmost", True)
 
@@ -629,9 +645,10 @@ class IndustrialDashboard:
         self.mask_pick_point = None
         self.mask_pick_circle = None
 
-        # ================= HEADER =================
-        header = tk.Frame(self.mask_win, bg="#0f172a", height=TITLE_BAR_HEIGHT)
+        header = tk.Frame(self.mask_win, bg=C["surface"], height=TITLE_BAR_HEIGHT,
+                          highlightbackground=C["border"], highlightthickness=1)
         header.pack(fill=tk.X)
+        header.pack_propagate(False)
 
         def back_to_size():
             self.mask_setup_active = False
@@ -640,60 +657,50 @@ class IndustrialDashboard:
             self.mask_win.destroy()
             self.open_size_window()
 
-        tk.Button(
-            header, text="← Back",
-            command=back_to_size,
-            bg="#0f172a", fg="#22d3ee", bd=0, padx=15,
-            font=("Segoe UI", 11, "bold")
-        ).pack(side=tk.LEFT)
+        themed_button(header, "←  PROFILE", back_to_size, role="quiet",
+                      padx=16, pady=6).pack(side=tk.LEFT, fill=tk.Y)
 
         tk.Label(
-            header, text="Mask Setup",
-            fg="#94a3b8", bg="#0f172a",
-            font=("Segoe UI", 11)
+            header, text="COLOR MASK SETUP",
+            fg=C["muted"], bg=C["surface"], font=(FONT, 10, "bold"),
         ).pack(side=tk.LEFT, padx=10)
+        themed_button(header, "✕", self.close_application, role="quiet",
+                      padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
 
-        tk.Button(
-            header, text="✕",
-            command=self.close_application,
-            bg="#0f172a", fg="white", bd=0, padx=12, font=("Segoe UI", 12)
-        ).pack(side=tk.RIGHT)
+        content = tk.Frame(self.mask_win, bg=C["bg"])
+        content.pack(expand=True, fill=tk.BOTH, padx=18, pady=14)
 
-        # ================= CONTENT =================
-        content = tk.Frame(self.mask_win, bg="#1e293b")
-        content.pack(expand=True, fill=tk.BOTH, padx=20, pady=10)
-
-        # Camera selection frame
-        cam_sel_frame = tk.Frame(content, bg="#1e293b")
+        cam_sel_frame = themed_card(content)
         cam_sel_frame.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(cam_sel_frame, text="Select Camera:", fg="white", bg="#1e293b", font=("Segoe UI", 12)).pack(side=tk.LEFT, padx=(0, 10))
+        text_box = tk.Frame(cam_sel_frame, bg=C["card"])
+        text_box.pack(side=tk.LEFT, padx=(16, 24), pady=10)
+        section_label(text_box, "Mask source").pack(anchor="w")
+        tk.Label(text_box, text="Capture, pick a color, then draw the product area",
+                 fg=C["text_soft"], bg=C["card"], font=(FONT, 9)).pack(anchor="w")
 
         def select_cam(c):
             if getattr(self, "mask_frozen", False): return
             self.mask_selected_camera = c
-            btn_cam1.config(bg="#10b981" if c == 1 else "#047857")
-            btn_cam2.config(bg="#10b981" if c == 2 else "#047857")
+            set_button_role(btn_cam1, "selected" if c == 1 else "secondary")
+            set_button_role(btn_cam2, "selected" if c == 2 else "secondary")
 
-        btn_cam1 = tk.Button(cam_sel_frame, text="Camera 1", bg="#10b981", fg="white", font=("Segoe UI", 12, "bold"), relief=tk.FLAT, width=12, command=lambda: select_cam(1))
-        btn_cam1.pack(side=tk.LEFT, padx=8)
+        btn_cam1 = themed_button(cam_sel_frame, "CAMERA 1", lambda: select_cam(1),
+                                 role="selected", width=10, pady=9)
+        btn_cam1.pack(side=tk.LEFT, padx=4, pady=10)
+        btn_cam2 = themed_button(cam_sel_frame, "CAMERA 2", lambda: select_cam(2),
+                                 role="secondary", width=10, pady=9)
+        btn_cam2.pack(side=tk.LEFT, padx=4, pady=10)
 
-        btn_cam2 = tk.Button(cam_sel_frame, text="Camera 2", bg="#047857", fg="white", font=("Segoe UI", 12, "bold"), relief=tk.FLAT, width=12, command=lambda: select_cam(2))
-        btn_cam2.pack(side=tk.LEFT, padx=8)
+        themed_button(cam_sel_frame, "SAVE MASK", self.save_mask_frame,
+                      role="primary", width=11, pady=9).pack(side=tk.RIGHT, padx=(4, 14), pady=10)
+        themed_button(cam_sel_frame, "CLEAR", self.clear_mask_frame,
+                      role="danger", width=8, pady=9).pack(side=tk.RIGHT, padx=4, pady=10)
+        themed_button(cam_sel_frame, "CAPTURE", self.capture_mask_frame,
+                      role="blue", width=10, pady=9).pack(side=tk.RIGHT, padx=4, pady=10)
 
-        # Actions
-        tk.Frame(cam_sel_frame, width=30, bg="#1e293b").pack(side=tk.LEFT) # spacer
-        btn_capture = tk.Button(cam_sel_frame, text="Capture Frame", bg="#f59e0b", fg="white", font=("Segoe UI", 12, "bold"), relief=tk.FLAT, width=16, command=self.capture_mask_frame)
-        btn_capture.pack(side=tk.LEFT, padx=5)
-
-        btn_clear = tk.Button(cam_sel_frame, text="Clear", bg="#f43f5e", fg="white", font=("Segoe UI", 12, "bold"), relief=tk.FLAT, width=10, command=self.clear_mask_frame)
-        btn_clear.pack(side=tk.LEFT, padx=5)
-
-        btn_save = tk.Button(cam_sel_frame, text="Save Mask", bg="#3b82f6", fg="white", font=("Segoe UI", 12, "bold"), relief=tk.FLAT, width=12, command=self.save_mask_frame)
-        btn_save.pack(side=tk.LEFT, padx=5)
-
-        # Canvas for live video
-        self.mask_canvas = tk.Canvas(content, bg="#020617", highlightthickness=0)
+        self.mask_canvas = tk.Canvas(content, bg=C["camera"], highlightthickness=1,
+                                     highlightbackground=C["border"])
         self.mask_canvas.pack(fill=tk.BOTH, expand=True)
 
         self.mask_canvas.bind("<ButtonPress-1>", self.on_mask_press)
@@ -785,13 +792,15 @@ class IndustrialDashboard:
         pop = tk.Toplevel(self.mask_win)
         pop.overrideredirect(True)
         pop.attributes("-topmost", True)
-        pop.configure(bg="#334155")
+        pop.configure(bg=C["card"], highlightbackground=C["border_strong"], highlightthickness=1)
         px = self.mask_win.winfo_x() + (WINDOW_WIDTH // 2) - 160
         py = self.mask_win.winfo_y() + (WINDOW_HEIGHT // 2) - 80
         pop.geometry(f"320x160+{px}+{py}")
-        tk.Label(pop, text="✓", fg="#10b981", bg="#334155", font=("Segoe UI", 36)).pack(pady=(15, 0))
-        tk.Label(pop, text=f"Saved {filename}", fg="white", bg="#334155", font=("Segoe UI", 13, "bold")).pack()
-        tk.Button(pop, text="OK", bg="#64748b", fg="white", relief=tk.FLAT, width=10, command=pop.destroy).pack(pady=15)
+        tk.Label(pop, text="✓", fg=C["success"], bg=C["card"], font=(FONT, 32, "bold")).pack(pady=(14, 0))
+        tk.Label(pop, text=f"Saved {filename}", fg=C["text"], bg=C["card"],
+                 font=(FONT, 13, "bold")).pack()
+        themed_button(pop, "DONE", pop.destroy, role="primary", width=10,
+                      pady=7).pack(pady=14)
 
     def on_mask_press(self, event):
         if not getattr(self, "mask_frozen", False): return
@@ -817,7 +826,7 @@ class IndustrialDashboard:
             if getattr(self, "mask_pick_circle", None):
                 self.mask_canvas.delete(self.mask_pick_circle)
             self.mask_pick_circle = self.mask_canvas.create_oval(
-                event.x-4, event.y-4, event.x+4, event.y+4, outline="#10b981", width=2
+                event.x-4, event.y-4, event.x+4, event.y+4, outline=C["success"], width=2
             )
         else:
             if getattr(self, "mask_rect", None):
@@ -828,40 +837,61 @@ class IndustrialDashboard:
     # image panel (dual canvases + zoom toolbars)
     # ==============================================================
     def _create_image_panel(self):
-        self.image_panel = tk.Frame(self.main_frame, bg="#0f172a")
+        self.image_panel = tk.Frame(self.main_frame, bg=C["bg"])
         self.image_panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        self.images_container = tk.Frame(self.image_panel, bg="#0f172a")
-        self.images_container.pack(fill=tk.BOTH, expand=True)
+        self.images_container = tk.Frame(self.image_panel, bg=C["bg"])
+        self.images_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 6))
 
         # ---- left ----
-        self.left_frame = tk.Frame(self.images_container, bg="#0f172a")
-        self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 1))
-        tk.Label(self.left_frame, text="Camera 1", bg="#0f172a", fg="#94a3b8", font=("Segoe UI", 9)).pack(pady=(5, 0))
+        self.left_frame = themed_card(self.images_container, bg=C["surface"])
+        self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        left_header = tk.Frame(self.left_frame, bg=C["surface"], height=38)
+        left_header.pack(fill=tk.X, padx=12)
+        left_header.pack_propagate(False)
+        status_dot(left_header).pack(side=tk.LEFT, pady=14, padx=(0, 7))
+        tk.Label(left_header, text="LEFT CAMERA", bg=C["surface"], fg=C["text_soft"],
+                 font=(FONT, 9, "bold")).pack(side=tk.LEFT, pady=9)
+        tk.Label(left_header, text="LIVE", bg=C["surface"], fg=C["accent"],
+                 font=(FONT, 8, "bold")).pack(side=tk.RIGHT, pady=10)
 
-        self.canvas_1 = tk.Canvas(self.left_frame, bg="#020617", highlightthickness=0)
-        self.canvas_1.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.canvas_1 = tk.Canvas(self.left_frame, bg=C["camera"], highlightthickness=0)
+        self.canvas_1.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
 
-        self.toolbar_1 = tk.Frame(self.canvas_1, bg="#334155", bd=1, relief=tk.RAISED)
-        btn_s = {"bg": "#475569", "fg": "#22d3ee", "font": ("Arial", 11, "bold"), "width": 3, "relief": tk.FLAT}
-        tk.Button(self.toolbar_1, text="+", command=self.zoom_in_1,    **btn_s).pack(side=tk.TOP, pady=2, padx=2)
-        tk.Button(self.toolbar_1, text="-", command=self.zoom_out_1,   **btn_s).pack(side=tk.TOP, pady=2, padx=2)
-        tk.Button(self.toolbar_1, text="⟲", command=self.reset_view_1, **btn_s).pack(side=tk.TOP, pady=2, padx=2)
+        self.toolbar_1 = tk.Frame(self.canvas_1, bg=C["surface"], bd=0,
+                                  highlightbackground=C["border_strong"], highlightthickness=1)
+        themed_button(self.toolbar_1, "+", self.zoom_in_1, role="quiet", width=2,
+                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(2, 0))
+        themed_button(self.toolbar_1, "−", self.zoom_out_1, role="quiet", width=2,
+                      padx=4, pady=5).pack(side=tk.TOP, padx=2)
+        themed_button(self.toolbar_1, "↺", self.reset_view_1, role="quiet", width=2,
+                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(0, 2))
         # Store the canvas window ID for later repositioning
         self.toolbar_win_id_1 = self.canvas_1.create_window(0, 0, anchor="ne", window=self.toolbar_1)
 
         # ---- right ----
-        self.right_frame = tk.Frame(self.images_container, bg="#0f172a")
-        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(1, 0))
-        tk.Label(self.right_frame, text="Camera 2", bg="#0f172a", fg="#94a3b8", font=("Segoe UI", 9)).pack(pady=(5, 0))
+        self.right_frame = themed_card(self.images_container, bg=C["surface"])
+        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        right_header = tk.Frame(self.right_frame, bg=C["surface"], height=38)
+        right_header.pack(fill=tk.X, padx=12)
+        right_header.pack_propagate(False)
+        status_dot(right_header).pack(side=tk.LEFT, pady=14, padx=(0, 7))
+        tk.Label(right_header, text="RIGHT CAMERA", bg=C["surface"], fg=C["text_soft"],
+                 font=(FONT, 9, "bold")).pack(side=tk.LEFT, pady=9)
+        tk.Label(right_header, text="LIVE", bg=C["surface"], fg=C["accent"],
+                 font=(FONT, 8, "bold")).pack(side=tk.RIGHT, pady=10)
 
-        self.canvas_2 = tk.Canvas(self.right_frame, bg="#020617", highlightthickness=0)
-        self.canvas_2.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.canvas_2 = tk.Canvas(self.right_frame, bg=C["camera"], highlightthickness=0)
+        self.canvas_2.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
 
-        self.toolbar_2 = tk.Frame(self.canvas_2, bg="#334155", bd=1, relief=tk.RAISED)
-        tk.Button(self.toolbar_2, text="+", command=self.zoom_in_2,    **btn_s).pack(side=tk.TOP, pady=2, padx=2)
-        tk.Button(self.toolbar_2, text="-", command=self.zoom_out_2,   **btn_s).pack(side=tk.TOP, pady=2, padx=2)
-        tk.Button(self.toolbar_2, text="⟲", command=self.reset_view_2, **btn_s).pack(side=tk.TOP, pady=2, padx=2)
+        self.toolbar_2 = tk.Frame(self.canvas_2, bg=C["surface"], bd=0,
+                                  highlightbackground=C["border_strong"], highlightthickness=1)
+        themed_button(self.toolbar_2, "+", self.zoom_in_2, role="quiet", width=2,
+                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(2, 0))
+        themed_button(self.toolbar_2, "−", self.zoom_out_2, role="quiet", width=2,
+                      padx=4, pady=5).pack(side=tk.TOP, padx=2)
+        themed_button(self.toolbar_2, "↺", self.reset_view_2, role="quiet", width=2,
+                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(0, 2))
         self.toolbar_win_id_2 = self.canvas_2.create_window(0, 0, anchor="ne", window=self.toolbar_2)
 
         # Bind configure events to reposition toolbars when canvas resizes
@@ -869,24 +899,20 @@ class IndustrialDashboard:
         self.canvas_2.bind("<Configure>", self._reposition_toolbar_2)
 
         # ---- progress bar ----
-        self.loading_container = tk.Frame(self.image_panel, bg="#1e293b", height=20)
+        self.loading_container = tk.Frame(self.image_panel, bg=C["bg"], height=24)
         self.loading_container.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.progress_label = tk.Label(self.loading_container, text="Live Feed",
-                                       fg="#94a3b8", bg="#1e293b", font=("Segoe UI", 10))
-        self.progress_label.pack(side=tk.LEFT, padx=10)
+                                       fg=C["muted"], bg=C["bg"], font=(FONT, 9))
+        self.progress_label.pack(side=tk.LEFT, padx=(14, 10))
 
-        self.style = ttk.Style()
-        self.style.theme_use('default')
-        self.style.configure("Sleek.Horizontal.TProgressbar", thickness=5,
-                             troughcolor='#0f172a', background='#8b5cf6', bordercolor="#1e293b")
         self.progress_bar = ttk.Progressbar(self.loading_container, orient=tk.HORIZONTAL,
-                                            mode='determinate', style="Sleek.Horizontal.TProgressbar")
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+                                            mode='determinate', style="App.Horizontal.TProgressbar")
+        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 14), pady=8)
 
         # Store original pack options for restoration
-        self.left_frame_pack_opts = {'side': tk.LEFT, 'fill': tk.BOTH, 'expand': True, 'padx': (0, 1)}
-        self.right_frame_pack_opts = {'side': tk.RIGHT, 'fill': tk.BOTH, 'expand': True, 'padx': (1, 0)}
+        self.left_frame_pack_opts = {'side': tk.LEFT, 'fill': tk.BOTH, 'expand': True, 'padx': (0, 5)}
+        self.right_frame_pack_opts = {'side': tk.RIGHT, 'fill': tk.BOTH, 'expand': True, 'padx': (5, 0)}
 
         # ---- bind pan/zoom ----
         self.canvas_1.bind("<ButtonPress-1>",  self._on_pan_start_1)
@@ -1084,8 +1110,9 @@ class IndustrialDashboard:
     # status / progress helpers
     # ==============================================================
     def set_pass_fail(self, status):
-        colours = {"PASS": "#10b981", "FAIL": "#ef4444", "READY": "#94a3b8", "LIVE": "#22d3ee"}
-        self.status_result_label.config(text=status, fg=colours.get(status, "#94a3b8"))
+        colours = {"PASS": C["success"], "FAIL": C["danger"],
+                   "READY": C["muted"], "LIVE": C["accent"]}
+        self.status_result_label.config(text=status, fg=colours.get(status, C["muted"]))
 
     def update_progress(self, value, text):
         self.progress_bar['value'] = value
