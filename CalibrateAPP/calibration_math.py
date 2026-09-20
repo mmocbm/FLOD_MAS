@@ -6,6 +6,40 @@ import cv2
 import numpy as np
 
 
+def coverage_cell(image_points, image_size, rows=3, columns=3):
+    """Return the grid cell containing the mean detected-board position."""
+    points = np.asarray(image_points, dtype=np.float64).reshape(-1, 2)
+    width, height = map(float, image_size)
+    if len(points) == 0 or width <= 0 or height <= 0:
+        raise ValueError("Image points and a positive image size are required")
+    center = points.mean(axis=0)
+    column = min(columns - 1, max(0, int(center[0] / width * columns)))
+    row = min(rows - 1, max(0, int(center[1] / height * rows)))
+    return row, column, (float(center[0] / width), float(center[1] / height))
+
+
+def next_coverage_cell(counts, last_cell=None):
+    """Choose a least-used cell, preferring distance from the last capture."""
+    counts = np.asarray(counts)
+    if counts.ndim != 2 or counts.size == 0:
+        raise ValueError("Coverage counts must be a non-empty 2D array")
+    candidates = np.argwhere(counts == counts.min())
+    if last_cell is None:
+        target = np.array([(counts.shape[0] - 1) / 2, (counts.shape[1] - 1) / 2])
+        distances = np.sum((candidates - target) ** 2, axis=1)
+        selected = candidates[np.argmin(distances)]
+    else:
+        last = np.asarray(last_cell, dtype=np.float64)
+        distances = np.sum((candidates - last) ** 2, axis=1)
+        selected = candidates[np.argmax(distances)]
+    return int(selected[0]), int(selected[1])
+
+
+def coverage_percent(counts):
+    counts = np.asarray(counts)
+    return int(round(100 * np.count_nonzero(counts) / counts.size)) if counts.size else 0
+
+
 def scale_camera_matrix(camera_matrix, calibrated_size, target_size):
     """Scale an intrinsic matrix from calibrated_size to target_size."""
     matrix = np.asarray(camera_matrix, dtype=np.float64).copy()

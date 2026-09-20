@@ -18,11 +18,12 @@ class FakeCamera:
         self.stream = self
         self.size = (2560, 1440)
         self.resolution_warning = 'Camera fallback test'
+        self.calibration_available = True
         self.released = False
     def read(self): return True, np.zeros((1440, 2560, 3), np.uint8)
     def isOpened(self): return not self.released
     def get_raw_frame_with_ret(self): return False, None
-    def reload_calibration(self): pass
+    def reload_calibration(self): return self.calibration_available
     def release(self): self.released = True
 
 
@@ -45,6 +46,19 @@ def run():
             app.open_settings_selector()
             app.open_camera_setup()
             setup = app.calibration_app
+            root.update_idletasks()
+            for widget in (setup.one_board_btn, setup.two_board_btn, setup.capture_btn):
+                assert widget.winfo_rooty() + widget.winfo_height() <= root.winfo_rooty() + root.winfo_height(), \
+                    f'{widget} is outside the Camera Setup window'
+            assert setup.controls_scrollbar.winfo_ismapped(), 'Camera Setup scrollbar is missing'
+            scroll_height = setup.controls_canvas.bbox('all')[3]
+            assert scroll_height > setup.controls_canvas.winfo_height(), 'Controls do not have a scrollable area'
+            setup.controls_canvas.yview_moveto(1.0)
+            root.update_idletasks()
+            assert setup.extrinsic_btn.winfo_rooty() + setup.extrinsic_btn.winfo_height() <= \
+                setup.controls_canvas.winfo_rooty() + setup.controls_canvas.winfo_height(), \
+                'Bottom Camera Setup controls cannot be reached by scrolling'
+            setup.controls_canvas.yview_moveto(0.0)
             setup.select_camera(cameras[0].camera_index)
             setup.cap = setup.camera_provider(cameras[0].camera_index)
             setup.camera_running = True

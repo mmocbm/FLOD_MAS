@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import json
 import time
+from app_config import CONFIG
+from measure.aruco_plane import ArucoPlaneEstimator, MarkerPlaneError
 from sklearn.decomposition import PCA
 from skimage.morphology import skeletonize
 from scipy.sparse import csr_matrix
@@ -81,15 +83,28 @@ class LinearFeatureInspectorOptimized:
         image_size = calib_data.get('image_size')
         self.calibration_image_size = tuple(image_size) if image_size else None
 
-        with open(extrinsics_path, 'r') as f:
-            extrin_data = json.load(f)
-
-        self.rvec = np.array(extrin_data['rvec'], dtype=np.float64).reshape(3, 1)
-        self.tvec = np.array(extrin_data['tvec'], dtype=np.float64).reshape(3, 1)
-
-        self.R, _ = cv2.Rodrigues(self.rvec)
-        self.plane_normal = self.R[:, 2]
-        self.d = -self.plane_normal.dot(self.tvec.flatten())
+        self.surface_setup_enabled = CONFIG['measurement_surface']['enabled']
+        self.marker_plane = None
+        self.measurement_unit = "mm"
+        self.marker_estimator = None
+        if self.surface_setup_enabled:
+            with open(extrinsics_path, 'r') as f:
+                extrin_data = json.load(f)
+            self.rvec = np.array(extrin_data['rvec'], dtype=np.float64).reshape(3, 1)
+            self.tvec = np.array(extrin_data['tvec'], dtype=np.float64).reshape(3, 1)
+            self.R, _ = cv2.Rodrigues(self.rvec)
+            self.plane_normal = self.R[:, 2]
+            self.d = -self.plane_normal.dot(self.tvec.flatten())
+        else:
+            marker = CONFIG['measurement_surface']
+            self.marker_estimator = ArucoPlaneEstimator(
+                self.base_camera_matrix, self.dist_coeffs, self.calibration_image_size,
+                dictionary_name=marker['aruco_dictionary'],
+                marker_id=marker['aruco_marker_id'],
+                marker_length_mm=marker['aruco_marker_length_mm'],
+                minimum_side_px=marker['minimum_marker_side_px'],
+                maximum_reprojection_error_px=marker['maximum_reprojection_error_px'],
+            )
 
         self.camera_matrix_inv = np.linalg.inv(self.camera_matrix)
 
@@ -168,6 +183,11 @@ class LinearFeatureInspectorOptimized:
         if points.ndim == 1:
             points = points.reshape(1, -1)
 
+        if not self.surface_setup_enabled:
+            if self.marker_plane is None:
+                return points.copy()
+            return self.marker_plane.pixels_to_mm(points)
+
         n_points = points.shape[0]
         world_coords = np.zeros((n_points, 2), dtype=np.float64)
 
@@ -198,6 +218,10 @@ class LinearFeatureInspectorOptimized:
         return result[0]
 
     def real_distance(self, p1, p2, verbose=False):
+        if not self.surface_setup_enabled and self.marker_plane is None:
+            return float(np.linalg.norm(
+                np.asarray(p1, dtype=np.float64) - np.asarray(p2, dtype=np.float64)
+            ))
         w1, w2 = self.pixel_to_world_batch([p1, p2])
         return np.linalg.norm(w1 - w2)
 
@@ -390,33 +414,30 @@ class LinearFeatureInspectorOptimized:
             length_mm = self.real_distance(pt1_clipped, pt2_clipped)
             self._end_timer("  Calibration", t_calib)
 
-            # Determine expected length and tolerances
-            expected = self._nearest_expected_length(length_mm)
-            deviation = abs(length_mm - expected)
-            nominal_tol = self.length_tolerance
-            total_tol = nominal_tol + self.me_length
-
-            within_nominal = deviation <= nominal_tol
-            within_total = deviation <= total_tol
-
-            # Defect flag based on total tolerance
-            defect = not within_total
-            if defect:
-                defect_count += 1
-
-            # Decide displayed value
-            if within_nominal:
+            if self.measurement_unit == "px":
                 display_value = length_mm
-            elif within_total:
-                # Inside total tolerance but outside nominal → show bound
-                if length_mm > expected:
-                    display_value = expected + nominal_tol
-                else:
-                    display_value = expected - nominal_tol
+                defect = False
             else:
-                display_value = length_mm   # defect, show actual
+                expected = self._nearest_expected_length(length_mm)
+                deviation = abs(length_mm - expected)
+                nominal_tol = self.length_tolerance
+                total_tol = nominal_tol + self.me_length
+                within_nominal = deviation <= nominal_tol
+                within_total = deviation <= total_tol
+                defect = not within_total
+                if defect:
+                    defect_count += 1
+                if within_nominal:
+                    display_value = length_mm
+                elif within_total:
+                    if length_mm > expected:
+                        display_value = expected + nominal_tol
+                    else:
+                        display_value = expected - nominal_tol
+                else:
+                    display_value = length_mm
 
-            label = f"{display_value:.1f}mm"
+            label = f"{display_value:.1f}{self.measurement_unit}"
 
             # Color: green if not defect, red if defect
             color = (0, 0, 255) if defect else (0, 255, 0)
@@ -558,30 +579,29 @@ class LinearFeatureInspectorOptimized:
                 mean_width_mm = np.mean(widths_mm)
                 std_width_mm = np.std(widths_mm)
 
-                # Determine defect and display value
-                deviation = abs(mean_width_mm - self.expected_width)
-                nominal_tol = self.width_tolerance
-                total_tol = nominal_tol + self.me_width
-
-                within_nominal = deviation <= nominal_tol
-                within_total = deviation <= total_tol
-
-                defect = not within_total
-                if defect:
-                    defect_segments += 1
-
-                # Display value
-                if within_nominal:
+                if self.measurement_unit == "px":
                     display_width = mean_width_mm
-                elif within_total:
-                    if mean_width_mm > self.expected_width:
-                        display_width = self.expected_width + nominal_tol
-                    else:
-                        display_width = self.expected_width - nominal_tol
+                    defect = False
                 else:
-                    display_width = mean_width_mm
+                    deviation = abs(mean_width_mm - self.expected_width)
+                    nominal_tol = self.width_tolerance
+                    total_tol = nominal_tol + self.me_width
+                    within_nominal = deviation <= nominal_tol
+                    within_total = deviation <= total_tol
+                    defect = not within_total
+                    if defect:
+                        defect_segments += 1
+                    if within_nominal:
+                        display_width = mean_width_mm
+                    elif within_total:
+                        if mean_width_mm > self.expected_width:
+                            display_width = self.expected_width + nominal_tol
+                        else:
+                            display_width = self.expected_width - nominal_tol
+                    else:
+                        display_width = mean_width_mm
 
-                label = f"{display_width:.1f}mm"
+                label = f"{display_width:.1f}{self.measurement_unit}"
 
                 color = self.defect_color if defect else self.normal_color
                 alpha = self.alpha_defect if defect else self.alpha_ok
@@ -630,7 +650,27 @@ class LinearFeatureInspectorOptimized:
             print(f"[DEBUG] Image shape: {original_bgr.shape}")
             print(f"[DEBUG] Mask shape: {mask_gray.shape}")
 
-        overlay = original_bgr.copy()
+        if self.surface_setup_enabled:
+            overlay = original_bgr.copy()
+        else:
+            try:
+                self.marker_plane = self.marker_estimator.detect(
+                    original_bgr, image_is_undistorted=True,
+                )
+                self.measurement_unit = "mm"
+                overlay = self.marker_estimator.annotate(
+                    original_bgr, self.marker_plane, image_is_undistorted=True,
+                )
+            except MarkerPlaneError as error:
+                self.marker_plane = None
+                self.measurement_unit = "px"
+                overlay = original_bgr.copy()
+                warning = "WARNING: marker not found - pixel measurements only"
+                print(f"{warning}: {error}")
+                cv2.putText(
+                    overlay, warning, (30, 55), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (0, 190, 255), 2, cv2.LINE_AA,
+                )
 
         straight_only, skel_dict, labels = self.filter_straight_objects(mask_gray)
         self.inspect_lengths(overlay, straight_only)

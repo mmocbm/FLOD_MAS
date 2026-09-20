@@ -19,7 +19,7 @@ def _resolution_signature(spec):
         'requested': [spec['width'], spec['height']],
         'fps': spec['fps'],
         'fourcc': spec['fourcc'],
-        'backend': CONFIG['capture']['backend'],
+        'use_dshow': CONFIG['capture']['use_dshow'],
         'fallback_resolutions': CONFIG['capture']['fallback_resolutions'],
     }
     encoded = json.dumps(settings, sort_keys=True, separators=(',', ':')).encode('utf-8')
@@ -69,7 +69,11 @@ class CameraStream:
         self.resolution_warning = None
         self.stopped = threading.Event()
         spec = camera_config(index)
-        self.cap = cv2.VideoCapture(index, getattr(cv2, CONFIG['capture']['backend']))
+        if CONFIG['capture']['use_dshow']:
+            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        else:
+            # Let OpenCV select the normal platform-default camera backend.
+            self.cap = cv2.VideoCapture(index)
         try:
             if not self.cap.isOpened():
                 raise RuntimeError(f"Camera {index} could not be opened")
@@ -168,15 +172,30 @@ class CameraHandler:
     def __init__(self, camera_index, calib_file_path):
         self.camera_index = camera_index
         self.calib_file_path = calib_file_path
-        self.undistorter = ImageUndistorter(calib_file_path)
+        self.undistorter = None
+        self.calibration_available = False
+        self.calibration_error = None
         self.stream = CameraStream(camera_index)
         self.cap = self.stream
         self.current_frame_raw = None
         self.current_frame_undistorted = None
+        # Calibration is optional at startup. The live camera remains usable so
+        # the operator can open Camera Setup and create the missing file.
+        self.reload_calibration()
 
     def reload_calibration(self):
-        self.undistorter = ImageUndistorter(self.calib_file_path)
+        try:
+            self.undistorter = ImageUndistorter(self.calib_file_path)
+        except Exception as error:
+            self.undistorter = None
+            self.calibration_available = False
+            self.calibration_error = str(error)
+            self.current_frame_undistorted = None
+            return False
+        self.calibration_available = True
+        self.calibration_error = None
         self.current_frame_undistorted = None
+        return True
 
     def read_frame(self):
         ok, frame = self.stream.read()
@@ -188,6 +207,8 @@ class CameraHandler:
         return self.current_frame_raw
 
     def get_undistorted_frame(self):
+        if self.undistorter is None:
+            return None
         if self.current_frame_raw is not None and self.current_frame_undistorted is None:
             self.current_frame_undistorted = self.undistorter.undistort(self.current_frame_raw)
         return self.current_frame_undistorted

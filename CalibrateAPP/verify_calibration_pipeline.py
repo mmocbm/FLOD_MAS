@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import cv2
 import numpy as np
+from app_config import CONFIG
 
 try:
     from .calibration_math import estimate_planar_pose, pixel_to_plane, scale_camera_matrix
@@ -12,8 +19,16 @@ except ImportError:
 
 
 def main():
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
-    board = cv2.aruco.CharucoBoard((11, 17), 0.015, 0.011, dictionary)
+    board_config = CONFIG['board']
+    dictionary = cv2.aruco.getPredefinedDictionary(
+        getattr(cv2.aruco, board_config['dictionary'])
+    )
+    board = cv2.aruco.CharucoBoard(
+        (board_config['squares_x'], board_config['squares_y']),
+        board_config['square_length_mm'] / 1000.0,
+        board_config['marker_length_mm'] / 1000.0,
+        dictionary,
+    )
 
     camera_matrix = np.array(
         [[2200.0, 0.0, 1280.0], [0.0, 2190.0, 720.0], [0.0, 0.0, 1.0]],

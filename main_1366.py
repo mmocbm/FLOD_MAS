@@ -15,6 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
 from Image_Processing.color_mask_generator import ColorMaskGenerator
 from CalibrateAPP.calibration_ui import CalibrationApp
+from measure.aruco_plane import (
+    ArucoPlaneEstimator, annotate_mask_measurements,
+    annotate_mask_pixel_measurements,
+)
 from ui_theme import (
     COLORS as C, FONT, button as themed_button, card as themed_card,
     configure_ttk, section_label, set_button_role, status_dot,
@@ -988,13 +992,41 @@ class IndustrialDashboard:
     # ==============================================================
     # video streaming – using raw frames
     # ==============================================================
+    def _refresh_inspection_availability(self):
+        """Enable inspection only for cameras with usable calibration."""
+        left_ready = bool(
+            self.camera1 is not None
+            and getattr(self.camera1, 'calibration_available', False)
+        )
+        right_ready = bool(
+            self.camera2 is not None
+            and getattr(self.camera2, 'calibration_available', False)
+        )
+        self.detect_btn_L.config(state=tk.NORMAL if left_ready else tk.DISABLED)
+        self.detect_btn_R.config(state=tk.NORMAL if right_ready else tk.DISABLED)
+
+        missing = []
+        if not left_ready:
+            missing.append("left")
+        if not right_ready:
+            missing.append("right")
+        if missing:
+            camera_text = " and ".join(missing)
+            self.set_pass_fail("SETUP")
+            self.update_progress(
+                100,
+                f"Camera setup required for {camera_text}; live preview is available, inspection is disabled",
+            )
+        else:
+            self.set_pass_fail("LIVE")
+            self.update_progress(100, "Live Feed")
+
     def start_video_stream(self):
         if self.camera1 is not None and self.camera2 is not None:
             self.video_streaming = True
             self.video_paused = False
-            self.set_pass_fail("LIVE")
-            self.update_progress(100, "Live Feed")
             self.update_video_feed()
+            self._refresh_inspection_availability()
             return
         if getattr(self, '_camera_starting', False):
             return
@@ -1111,7 +1143,8 @@ class IndustrialDashboard:
     # ==============================================================
     def set_pass_fail(self, status):
         colours = {"PASS": C["success"], "FAIL": C["danger"],
-                   "READY": C["muted"], "LIVE": C["accent"]}
+                   "READY": C["muted"], "LIVE": C["accent"],
+                   "WARNING": C["warning"], "SETUP": C["warning"]}
         self.status_result_label.config(text=status, fg=colours.get(status, C["muted"]))
 
     def update_progress(self, value, text):
@@ -1127,7 +1160,11 @@ class IndustrialDashboard:
             return
         if self.camera1 is None or self.camera2 is None:
             return
-        if self.detect_btn_L['state'] == tk.DISABLED:
+        button = self.detect_btn_L if side == "L" else self.detect_btn_R
+        camera = self.camera1 if side == "L" else self.camera2
+        if (button['state'] == tk.DISABLED
+                or not getattr(camera, 'calibration_available', False)):
+            self._refresh_inspection_availability()
             return  # Prevent overlapping detections
             
         if not self.active_size:
@@ -1159,6 +1196,8 @@ class IndustrialDashboard:
             _, frame = self.camera1.get_raw_frame_with_ret()
             frame_undist = self.camera1.get_undistorted_frame()
             mask_path = "mask_1.png"
+            calibration_path = CALIB_FILE_1
+            camera_handler = self.camera1
         else:
             camera_num = 2
             canvas = self.canvas_2
@@ -1166,6 +1205,8 @@ class IndustrialDashboard:
             _, frame = self.camera2.get_raw_frame_with_ret()
             frame_undist = self.camera2.get_undistorted_frame()
             mask_path = "mask_2.png"
+            calibration_path = CALIB_FILE_2
+            camera_handler = self.camera2
 
         if frame is not None:
             ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
@@ -1179,25 +1220,95 @@ class IndustrialDashboard:
                 cv2.imwrite(os.path.join(undist_dir, f"frame_{ts}.jpg"), frame_undist)
 
         display_frame = frame
+        marker_plane = None
+        estimator = None
+        marker_mode = not CONFIG['measurement_surface']['enabled']
+        marker_warning = None
+        if marker_mode:
+            try:
+                estimator = ArucoPlaneEstimator.from_calibration_file(
+                    calibration_path, CONFIG['measurement_surface'],
+                )
+                marker_plane = estimator.detect(frame_undist, image_is_undistorted=True)
+                display_frame = estimator.annotate(
+                    frame_undist, marker_plane, image_is_undistorted=True,
+                )
+                print(
+                    f"Camera {camera_num}: measurement marker "
+                    f"{CONFIG['measurement_surface']['aruco_marker_id']} ready; "
+                    f"pose RMS {marker_plane.reprojection_rms_px:.3f}px"
+                )
+                self.root.after(
+                    0, self.update_progress, 100,
+                    f"Camera {camera_num}: measurement marker ready",
+                )
+            except Exception as error:
+                print(f"Camera {camera_num} marker measurement error: {error}")
+                marker_warning = (
+                    "WARNING: real measurements were not calculated because "
+                    "marker 0 was not found — showing pixel measurements"
+                )
+                display_frame = frame_undist if frame_undist is not None else frame
+                self.root.after(0, self.set_pass_fail, "WARNING")
+                self.root.after(0, self.update_progress, 100, marker_warning)
         if frame is not None and os.path.exists(mask_path):
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
             if mask is not None:
                 if mask.shape[:2] != frame.shape[:2]:
                     mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                display_frame = cv2.bitwise_and(frame, frame, mask=mask)
-                
-                v_coords = cv2.findNonZero(mask)
-                if v_coords is not None:
-                    x, y, w, h = cv2.boundingRect(v_coords)
-                    pad = 30
-                    orig_h, orig_w = display_frame.shape[:2]
-                    
-                    x1 = max(0, x - pad)
-                    y1 = max(0, y - pad)
-                    x2 = min(orig_w, x + w + pad)
-                    y2 = min(orig_h, y + h + pad)
-                    
-                    display_frame = display_frame[y1:y2, x1:x2]
+                if marker_mode:
+                    undistorted_mask = camera_handler.undistorter.undistort(mask)
+                    undistorted_mask = np.where(undistorted_mask > 127, 255, 0).astype(np.uint8)
+                    if marker_plane is not None:
+                        display_frame, measurements = annotate_mask_measurements(
+                            display_frame, undistorted_mask, marker_plane,
+                        )
+                    else:
+                        display_frame, measurements = annotate_mask_pixel_measurements(
+                            display_frame, undistorted_mask,
+                        )
+                    if measurements and marker_plane is not None:
+                        summary = ", ".join(
+                            f"{item['length_mm']:.1f} x {item['width_mm']:.1f} mm"
+                            for item in measurements
+                        )
+                        print(f"Camera {camera_num} measurements: {summary}")
+                        self.root.after(
+                            0, self.update_progress, 100,
+                            f"Camera {camera_num}: {len(measurements)} item(s) measured",
+                        )
+                    elif measurements:
+                        summary = ", ".join(
+                            f"{item['length_px']:.1f} x {item['width_px']:.1f} px"
+                            for item in measurements
+                        )
+                        print(f"Camera {camera_num} pixel measurements: {summary}")
+                        self.root.after(0, self.set_pass_fail, "WARNING")
+                        self.root.after(
+                            0, self.update_progress, 100,
+                            f"WARNING: marker not found; {len(measurements)} item(s) measured in pixels only",
+                        )
+                    else:
+                        self.root.after(
+                            0, self.update_progress, 100,
+                            (f"Camera {camera_num}: marker ready, no masked item found"
+                             if marker_plane is not None else marker_warning),
+                        )
+                else:
+                    display_frame = cv2.bitwise_and(frame, frame, mask=mask)
+
+                    v_coords = cv2.findNonZero(mask)
+                    if v_coords is not None:
+                        x, y, w, h = cv2.boundingRect(v_coords)
+                        pad = 30
+                        orig_h, orig_w = display_frame.shape[:2]
+
+                        x1 = max(0, x - pad)
+                        y1 = max(0, y - pad)
+                        x2 = min(orig_w, x + w + pad)
+                        y2 = min(orig_h, y + h + pad)
+
+                        display_frame = display_frame[y1:y2, x1:x2]
                 
         if display_frame is not None:
             df_copy = display_frame.copy()
@@ -1235,9 +1346,8 @@ class IndustrialDashboard:
         self.root.after(0, self._finish_detection)
 
     def _finish_detection(self):
-        self.detect_btn_L.config(state=tk.NORMAL)
-        self.detect_btn_R.config(state=tk.NORMAL)
         self.video_paused = False
+        self._refresh_inspection_availability()
 
     # ==============================================================
     # zoom / pan (only used when images are shown, not in live feed)
@@ -1385,13 +1495,8 @@ def main():
         app.zoom_level_1 = app.zoom_level_2 = 1.0
         app.pan_x_1 = app.pan_y_1 = app.pan_x_2 = app.pan_y_2 = 0
 
-        # Re-enable detection buttons
-        app.detect_btn_L.config(state=tk.NORMAL)
-        app.detect_btn_R.config(state=tk.NORMAL)
-
         app.video_paused = False
-        app.set_pass_fail("LIVE")
-        app.update_progress(100, "Live Feed")
+        app._refresh_inspection_availability()
 
     # ------------------------------------------------------------------
     app = IndustrialDashboard(root, reset_system)

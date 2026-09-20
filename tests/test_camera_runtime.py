@@ -51,6 +51,28 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(stream.cap.released)
 
     @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_dshow_can_be_enabled(self, video_capture):
+        with patch.dict(CONFIG['capture'], {'use_dshow': True}):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            video_capture.assert_called_once_with(
+                CONFIG['cameras'][0]['index'], cv2.CAP_DSHOW,
+            )
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_dshow_can_be_disabled_for_normal_capture(self, video_capture):
+        with patch.dict(CONFIG['capture'], {'use_dshow': False}):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            video_capture.assert_called_once_with(CONFIG['cameras'][0]['index'])
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
     @patch.object(Device, 'read', return_value=(True, np.zeros((2, 2, 3), dtype=np.uint8)))
     def test_unsupported_resolution_continues_with_warning(self, *_):
         stream = CameraStream(CONFIG['cameras'][0]['index'])
@@ -125,6 +147,30 @@ class CaptureTests(unittest.TestCase):
         handler.get_undistorted_frame()
         handler.get_undistorted_frame()
         undistorter.return_value.undistort.assert_called_once_with(original)
+
+    @patch('camera_handler.CameraStream')
+    @patch('camera_handler.ImageUndistorter', side_effect=FileNotFoundError('missing calibration'))
+    def test_missing_calibration_keeps_camera_stream_available(self, undistorter, stream):
+        handler = CameraHandler(CONFIG['cameras'][0]['index'], 'missing.json')
+
+        stream.assert_called_once_with(CONFIG['cameras'][0]['index'])
+        self.assertFalse(handler.calibration_available)
+        self.assertIsNone(handler.undistorter)
+        self.assertIn('missing calibration', handler.calibration_error)
+        self.assertIsNone(handler.get_undistorted_frame())
+
+    @patch('camera_handler.CameraStream')
+    @patch('camera_handler.ImageUndistorter')
+    def test_reload_enables_calibration_after_file_is_created(self, undistorter, stream):
+        loaded = object()
+        undistorter.side_effect = [FileNotFoundError('missing calibration'), loaded]
+        handler = CameraHandler(CONFIG['cameras'][0]['index'], 'created-later.json')
+
+        self.assertFalse(handler.calibration_available)
+        self.assertTrue(handler.reload_calibration())
+        self.assertTrue(handler.calibration_available)
+        self.assertIs(handler.undistorter, loaded)
+        self.assertIsNone(handler.calibration_error)
 
 
 if __name__ == '__main__':

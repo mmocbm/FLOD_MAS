@@ -2,13 +2,19 @@
 
 ## What is mathematically valid
 
-The application uses a two-stage calibration:
+The application always calibrates the camera and supports two measurement-plane modes:
 
 1. **Intrinsics:** detect ChArUco corners in varied views, match each detected ID
    to its board coordinate, and solve for the camera matrix and distortion.
-2. **Measurement-plane pose:** place the same board flat on the final measurement
-   surface, match its points, estimate `rvec`/`tvec`, and use that pose to intersect
-   image rays with the board's `Z=0` plane.
+   The operator may use the original single-board method or two uniquely numbered
+   boards. In two-board mode, every board pose is passed as its own calibration view;
+   two independently placed boards are never incorrectly treated as one rigid board.
+2. **Saved surface mode:** place the same board flat on the final measurement
+   surface, estimate its pose, and reuse that saved plane during inspection.
+3. **Per-inspection marker mode:** detect configured 4×4 ArUco marker ID 0 in each
+   inspection frame and calculate an image-to-plane homography in millimetres.
+   If the marker is unavailable, continue with pixel-only distances and display a
+   non-blocking warning; do not calculate metric PASS/FAIL results for that frame.
 
 This follows OpenCV's current ChArUco workflow. OpenCV recommends ChArUco corners
 for calibration because they combine partial-board detection with subpixel chessboard
@@ -30,21 +36,35 @@ References:
 ## Correctness controls implemented
 
 - Exactly one camera is calibrated per session.
-- Twenty intrinsic views are requested; at least ten valid views must survive
-  re-detection.
-- Views require at least ten ChArUco corners.
+- In one-board mode, twenty camera views are requested. In two-board mode, twenty
+  photo sets are requested and each set contributes two independent board views.
+  Each accepted view is stored immediately. The full camera calculation runs once,
+  after all requested photos or photo sets are accepted.
+- Two-board prints use non-overlapping marker IDs. If both are found in one image,
+  both views are accepted. Otherwise the first view and image remain saved while
+  the UI requests the missing board in a second image. An automatic masked retry
+  is performed before falling back to that two-image flow.
+- Views require the configured minimum number of ChArUco corners.
 - All intrinsic images must have one consistent resolution.
+- The live preview draws a 3×3 coverage map, points from previous captures, saved
+  capture centers, and the recommended area for the next view.
+- Board detection runs only when **Capture Photo** is pressed. The full-resolution
+  frame is saved as PNG and reloaded before detection. Valid images remain; rejected
+  images are deleted. The frame is held while points are drawn, then live display resumes.
+- Coverage guidance improves image distribution but does not replace the operator's
+  need to tilt the board and vary its distance where the physical setup allows.
 - Camera matrices are checked for finite, positive focal lengths.
 - Overall and per-view intrinsic reprojection errors are saved.
-- Extrinsics can only be captured after intrinsics complete.
+- In saved surface mode, the surface reference can only be captured after camera
+  calibration. In marker mode, Camera Setup finishes immediately after calibration.
 - The UI explicitly requires the board to be flat on the final measurement surface.
 - The extrinsic reference requires at least twenty corners.
 - The extrinsic pose is refined and rejected above 1.5 px RMS reprojection error.
 - The exact reference and an axes-annotated image are saved for audit.
 - Capture resolution is specified per camera in root `config.json`, shared by setup
   and runtime. Unsupported sizes trigger a search for the best verified camera mode
-  and an OK warning before use. Original frames remain
-  full resolution; preview copies can be smaller. Intrinsics are scaled to the
+  and silently use it. Original frames remain full resolution; preview copies can
+  be smaller. Intrinsics are scaled to the
   processing image size. Recalibrate after changing capture mode or field of view.
 
 ## Numerical proof
