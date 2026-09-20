@@ -4,7 +4,7 @@
     {"index": 1, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "calibration_file": "Files/camera_calibration_1.json", "extrinsics_file": "Files/camera_extrinsics_1.json"}
   ],
   "capture": {
-    "use_dshow": false, "buffer_size": 1,
+    "use_dshow": true, "buffer_size": 1,
     "resolution_cache_file": "Files/camera_resolution_cache.json",
     "fallback_resolutions": [[4096, 2160], [4000, 3000], [3840, 2160], [3264, 2448], [2592, 1944], [2560, 1440], [2048, 1536], [1920, 1080], [1600, 1200], [1280, 720], [640, 480]],
     "verification_frames": 3
