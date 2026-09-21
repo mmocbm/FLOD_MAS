@@ -112,6 +112,9 @@ class IndustrialDashboard:
 
         # --- serial communication ---
         self.serial_conn = None
+        self.serial_lock = threading.Lock()
+        self.inspection_busy = False
+        self._serial_pending_side = None
         self._init_serial()
 
         # --- window chrome ---
@@ -139,36 +142,60 @@ class IndustrialDashboard:
             return
 
         try:
-            self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+            self.serial_conn = serial.Serial(
+                SERIAL_PORT, BAUD_RATE, timeout=0.1, write_timeout=0.2,
+            )
             threading.Thread(target=self._serial_monitor, daemon=True).start()
             print(f"Serial connected on {SERIAL_PORT}")
         except Exception as e:
             print(f"Could not connect to serial port {SERIAL_PORT}: {e}")
 
     def _serial_monitor(self):
-        while True:
+        while not getattr(self, '_closing', False):
             if self.serial_conn and self.serial_conn.is_open:
                 try:
                     if self.serial_conn.in_waiting > 0:
                         line = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
                         if line == "LeftCheck":
-                            print("Arduino -> LeftCheck")
-                            try:
-                                self.serial_conn.write(b"L2\n")
-                            except Exception as e:
-                                print(f"Serial write error L2: {e}")
-                            self.root.after(0, lambda: self.start_detect_thread("R"))
+                            print("ESP32 -> LeftCheck")
+                            self.root.after(0, self._handle_serial_button, "L")
                         elif line == "RightCheck":
-                            print("Arduino -> RightCheck")
-                            try:
-                                self.serial_conn.write(b"R2\n")
-                            except Exception as e:
-                                print(f"Serial write error R2: {e}")
-                            self.root.after(0, lambda: self.start_detect_thread("L"))
+                            print("ESP32 -> RightCheck")
+                            self.root.after(0, self._handle_serial_button, "R")
                 except Exception as e:
                     print(f"Serial read error: {e}")
                     time.sleep(1)
             time.sleep(0.01)
+
+    def _send_serial_status(self, message):
+        """Reply only after the dashboard has accepted or rejected a request."""
+        connection = getattr(self, 'serial_conn', None)
+        if connection is None or not connection.is_open:
+            return
+        try:
+            with self.serial_lock:
+                connection.write((message + "\n").encode('ascii'))
+        except Exception as error:
+            print(f"Serial write error ({message}): {error}")
+
+    def _handle_serial_button(self, side):
+        if getattr(self, 'inspection_busy', False):
+            self._send_serial_status(f"{side}_BUSY")
+            return
+        camera = self.camera1 if side == "L" else self.camera2
+        if (camera is None or not getattr(camera, 'calibration_available', False)
+                or self.camera1 is None or self.camera2 is None
+                or getattr(self, 'calibration_page', None) is not None):
+            self._send_serial_status(f"{side}_NOT_READY")
+            return
+        # Set this before starting the worker, so even a very fast failure
+        # still sends its completion status to the correct button.
+        self._serial_pending_side = side
+        if self.start_detect_thread(side):
+            self._send_serial_status(f"{side}_ACK")
+        else:
+            self._serial_pending_side = None
+            self._send_serial_status(f"{side}_NOT_READY")
 
     def _validate_strip_width(self, value):
         try:
@@ -994,6 +1021,10 @@ class IndustrialDashboard:
     # ==============================================================
     def _refresh_inspection_availability(self):
         """Enable inspection only for cameras with usable calibration."""
+        if getattr(self, 'inspection_busy', False):
+            self.detect_btn_L.config(state=tk.DISABLED)
+            self.detect_btn_R.config(state=tk.DISABLED)
+            return
         left_ready = bool(
             self.camera1 is not None
             and getattr(self.camera1, 'calibration_available', False)
@@ -1156,28 +1187,45 @@ class IndustrialDashboard:
     # detection trigger – with maximize & highlight
     # ==============================================================
     def start_detect_thread(self, side):
+        if getattr(self, 'inspection_busy', False):
+            return False
         if getattr(self, 'calibration_page', None) is not None:
-            return
+            return False
         if self.camera1 is None or self.camera2 is None:
-            return
+            return False
         button = self.detect_btn_L if side == "L" else self.detect_btn_R
         camera = self.camera1 if side == "L" else self.camera2
         if (button['state'] == tk.DISABLED
                 or not getattr(camera, 'calibration_available', False)):
             self._refresh_inspection_availability()
-            return  # Prevent overlapping detections
+            return False
             
         if not self.active_size:
             self._show_error_popup("Set Size First")
-            return
+            return False
 
         # Disable both detection buttons while processing
+        self.inspection_busy = True
         self.detect_btn_L.config(state=tk.DISABLED)
         self.detect_btn_R.config(state=tk.DISABLED)
         self.video_paused = True
 
         # Start a thread that does the detection
-        threading.Thread(target=self._simulate_detection, args=(side,)).start()
+        threading.Thread(target=self._run_detection, args=(side,), daemon=True).start()
+        return True
+
+    def _run_detection(self, side):
+        try:
+            self._simulate_detection(side)
+        except Exception as error:
+            print(f"Inspection {side} failed: {error}")
+            self.root.after(0, self._inspection_failed)
+
+    def _inspection_failed(self):
+        self.restore_dual_view()
+        self._finish_detection(completed=False)
+        self.set_pass_fail("WARNING")
+        self.update_progress(100, "Inspection could not be completed")
 
     def _simulate_detection(self, side):
         """
@@ -1207,6 +1255,9 @@ class IndustrialDashboard:
             mask_path = "mask_2.png"
             calibration_path = CALIB_FILE_2
             camera_handler = self.camera2
+
+        if frame is None:
+            raise RuntimeError(f"Camera {camera_num} did not return a frame")
 
         if frame is not None:
             ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
@@ -1345,8 +1396,15 @@ class IndustrialDashboard:
         # Re-enable buttons and resume video on main thread
         self.root.after(0, self._finish_detection)
 
-    def _finish_detection(self):
+    def _finish_detection(self, completed=True):
         self.video_paused = False
+        self.inspection_busy = False
+        serial_side = getattr(self, '_serial_pending_side', None)
+        self._serial_pending_side = None
+        if serial_side is not None:
+            self._send_serial_status(
+                f"{serial_side}_{'DONE' if completed else 'ERROR'}"
+            )
         self._refresh_inspection_availability()
 
     # ==============================================================
