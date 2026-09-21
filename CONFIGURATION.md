@@ -25,11 +25,17 @@ can increase startup time; the interface stays responsive during the search.
 
 Set `capture.use_dshow` to `true` to open both cameras through Windows DirectShow.
 Set it to `false` to call OpenCV's normal `VideoCapture(index)` and let OpenCV choose
-the default camera backend. Restart the application after changing this setting.
+the default camera backend. An individual camera can override this with its own
+`use_dshow` value. Camera 1 currently has `use_dshow: false` because DirectShow
+could not open that index; Camera 0 follows the global DirectShow setting. If a
+DirectShow-selected camera cannot open, the app retries that index with the default
+backend. Restart the application after changing these settings. Camera indexes
+can differ between backends, so verify that the left and right previews show the
+intended devices.
 
 The first successful result for each camera is saved in `resolution_cache_file`.
 Later launches try that verified size immediately, avoiding another full search.
-Changing the requested size, frame rate, format, `use_dshow`, or fallback list makes
+Changing the requested size, frame rate, format, effective backend, or fallback list makes
 the saved result invalid and automatically performs a fresh search.
 
 Camera threads continuously retain the newest full-resolution image. Camera Setup

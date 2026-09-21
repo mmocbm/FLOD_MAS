@@ -13,13 +13,16 @@ RESOLUTION_CACHE_PATH = ROOT / CONFIG['capture'].get(
 _resolution_cache_lock = threading.Lock()
 
 
-def _resolution_signature(spec):
+def _resolution_signature(spec, backend=None):
     """Identify settings that can change the camera's best usable mode."""
+    if backend is None:
+        backend = ('dshow' if spec.get('use_dshow', CONFIG['capture']['use_dshow'])
+                   else 'default')
     settings = {
         'requested': [spec['width'], spec['height']],
         'fps': spec['fps'],
         'fourcc': spec['fourcc'],
-        'use_dshow': CONFIG['capture']['use_dshow'],
+        'backend': backend,
         'fallback_resolutions': CONFIG['capture']['fallback_resolutions'],
     }
     encoded = json.dumps(settings, sort_keys=True, separators=(',', ':')).encode('utf-8')
@@ -69,19 +72,26 @@ class CameraStream:
         self.resolution_warning = None
         self.stopped = threading.Event()
         spec = camera_config(index)
-        if CONFIG['capture']['use_dshow']:
-            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        else:
-            # Let OpenCV select the normal platform-default camera backend.
+        use_dshow = spec.get('use_dshow', CONFIG['capture']['use_dshow'])
+        self.capture_backend = 'dshow' if use_dshow else 'default'
+        self.cap = (cv2.VideoCapture(index, cv2.CAP_DSHOW) if use_dshow
+                    else cv2.VideoCapture(index))
+        if use_dshow and not self.cap.isOpened():
+            self.cap.release()
+            print(f"Camera {index}: DirectShow could not open; trying the default backend")
             self.cap = cv2.VideoCapture(index)
+            self.capture_backend = 'default'
         try:
             if not self.cap.isOpened():
-                raise RuntimeError(f"Camera {index} could not be opened")
+                raise RuntimeError(
+                    f"Camera {index} could not be opened with the "
+                    f"{'default backend after DirectShow failed' if use_dshow else 'default backend'}"
+                )
             if spec['fourcc']:
                 self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*spec['fourcc']))
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, CONFIG['capture']['buffer_size'])
             requested = (spec['width'], spec['height'])
-            signature = _resolution_signature(spec)
+            signature = _resolution_signature(spec, self.capture_backend)
             cached = _read_cached_resolution(index, signature)
             attempted = cached or requested
             frame = self._try_resolution(attempted, spec['fps'])

@@ -73,6 +73,48 @@ class CaptureTests(unittest.TestCase):
             stream.thread.join(1)
 
     @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_camera_override_uses_default_backend(self, video_capture):
+        camera = CONFIG['cameras'][1]
+        with patch.dict(CONFIG['capture'], {'use_dshow': True}):
+            stream = CameraStream(camera['index'])
+        try:
+            video_capture.assert_called_once_with(camera['index'])
+            self.assertEqual(stream.capture_backend, 'default')
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    def test_failed_dshow_open_retries_default_backend(self):
+        class ClosedDevice(Device):
+            def isOpened(self): return False
+
+        closed = ClosedDevice()
+        opened = Device()
+        camera = CONFIG['cameras'][0]
+        with (patch.dict(CONFIG['capture'], {'use_dshow': True}),
+              patch('camera_handler.cv2.VideoCapture', side_effect=[closed, opened]) as capture):
+            stream = CameraStream(camera['index'])
+        try:
+            self.assertEqual(
+                [call.args for call in capture.call_args_list],
+                [(camera['index'], cv2.CAP_DSHOW), (camera['index'],)],
+            )
+            self.assertTrue(closed.released)
+            self.assertEqual(stream.capture_backend, 'default')
+            self.assertEqual(stream.size, (camera['width'], camera['height']))
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    def test_backend_is_part_of_resolution_cache_signature(self):
+        from camera_handler import _resolution_signature
+        spec = CONFIG['cameras'][0]
+        self.assertNotEqual(
+            _resolution_signature(spec, 'dshow'),
+            _resolution_signature(spec, 'default'),
+        )
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
     @patch.object(Device, 'read', return_value=(True, np.zeros((2, 2, 3), dtype=np.uint8)))
     def test_unsupported_resolution_continues_with_warning(self, *_):
         stream = CameraStream(CONFIG['cameras'][0]['index'])
