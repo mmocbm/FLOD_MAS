@@ -6,7 +6,7 @@
   "capture": {
     "use_dshow": true, "buffer_size": 1,
     "resolution_cache_file": "Files/camera_resolution_cache.json",
-    "fallback_resolutions": [[4096, 2160], [4000, 3000], [3840, 2160], [3264, 2448], [2592, 1944], [2560, 1440], [2048, 1536], [1920, 1080], [1600, 1200], [1280, 720], [640, 480]],
+    "fallback_resolutions": [[4608, 3456], [4096, 2160], [4000, 3000], [3840, 2160], [3264, 2448], [2592, 1944], [2560, 1440], [2048, 1536], [1920, 1080], [1600, 1200], [1280, 720], [640, 480]],
     "verification_frames": 3
   },
   "preview": {"max_width": 880, "max_height": 540, "interval_ms": 66},
