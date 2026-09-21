@@ -1,7 +1,7 @@
 {
   "cameras": [
     {"index": 0, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "calibration_file": "Files/camera_calibration_0.json", "extrinsics_file": "Files/camera_extrinsics_0.json"},
-    {"index": 1, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "use_dshow": false, "calibration_file": "Files/camera_calibration_1.json", "extrinsics_file": "Files/camera_extrinsics_1.json"}
+    {"index": 1, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "calibration_file": "Files/camera_calibration_1.json", "extrinsics_file": "Files/camera_extrinsics_1.json"}
   ],
   "capture": {
     "use_dshow": true, "buffer_size": 1,
