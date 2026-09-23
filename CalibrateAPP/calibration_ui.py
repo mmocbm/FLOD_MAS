@@ -62,6 +62,7 @@ MIN_CORNERS = CONFIG['calibration']['minimum_corners']
 MIN_EXTRINSIC_CORNERS = CONFIG['calibration']['surface_minimum_corners']
 MAX_INTRINSIC_RMS_PX = CONFIG['calibration']['camera_warning_rms_px']
 MAX_EXTRINSIC_RMS_PX = CONFIG['calibration']['surface_maximum_rms_px']
+MAX_VERIFICATION_RMS_PX = CONFIG['calibration']['verification_max_rms_px']
 COVERAGE_ROWS = CONFIG['calibration']['coverage_grid_rows']
 COVERAGE_COLUMNS = CONFIG['calibration']['coverage_grid_columns']
 CAMERA_IDS = [c['index'] for c in CONFIG['cameras']]
@@ -104,6 +105,7 @@ class CalibrationApp:
         self.capture_point_sets = []
         self.coverage_counts = np.zeros((COVERAGE_ROWS, COVERAGE_COLUMNS), dtype=np.int32)
         self.processing_capture = False
+        self.processing_verification = False
         self.is_calibrating = False
         self.stage = "select"
         self.camera_matrix = None
@@ -330,6 +332,21 @@ class CalibrationApp:
             font=(FONT, 9),
         ).pack(anchor="w", pady=(5, 0))
 
+        verify_box = tk.Frame(controls, bg=C["surface_2"], highlightbackground=C["border_strong"], highlightthickness=1)
+        verify_box.pack(fill=tk.X, padx=12, pady=(0, 10))
+        tk.Label(verify_box, text="CHECK SAVED CALIBRATION", bg=C["surface_2"], fg=CYAN,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
+        tk.Label(
+            verify_box,
+            text="Put the ChArUco board in view, then capture one photo. The app checks its reprojection error using the saved lens calibration.",
+            bg=C["surface_2"], fg=MUTED, wraplength=360, justify=tk.LEFT, font=(FONT, 9),
+        ).pack(anchor="w", padx=10, pady=(0, 7))
+        self.verify_btn = self._button(
+            verify_box, "TEST SAVED CALIBRATION", self.verify_saved_calibration,
+            PURPLE, 29, tk.DISABLED,
+        )
+        self.verify_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
+
         plane_box = tk.Frame(controls, bg=C["surface_2"], highlightbackground=C["border_strong"], highlightthickness=1)
         plane_box.pack(fill=tk.X, padx=12, pady=(0, 10))
         plane_title = ("4  MEASUREMENT SURFACE" if SURFACE_SETUP_ENABLED
@@ -478,6 +495,14 @@ class CalibrationApp:
             state=(tk.NORMAL if self.camera_running and self.stage == "capture"
                    and not self.processing_capture else tk.DISABLED)
         )
+        if hasattr(self, 'verify_btn'):
+            saved_calibration = (self.camera_index is not None and
+                                 self._calibration_path().is_file())
+            self.verify_btn.configure(
+                state=(tk.NORMAL if self.camera_running and saved_calibration
+                       and self.stage == "capture" and not self.processing_capture
+                       and not self.processing_verification else tk.DISABLED)
+            )
         self.extrinsic_btn.configure(
             state=(tk.NORMAL if SURFACE_SETUP_ENABLED and self.camera_running
                    and self.stage == "extrinsic_ready" else tk.DISABLED)
@@ -496,7 +521,7 @@ class CalibrationApp:
         return spec['width'], spec['height']
 
     def select_camera(self, index):
-        if (self.starting_camera or self.processing_capture or
+        if (self.starting_camera or self.processing_capture or self.processing_verification or
                 self.stage in ("calibrating", "extrinsic_capturing")):
             return
         if self.camera_running:
@@ -514,6 +539,7 @@ class CalibrationApp:
         self.dist_coeffs = None
         self.calibration_image_size = None
         self.pending_dual_capture = None
+        self.processing_verification = False
         unit = " photo sets" if self.use_two_boards else ""
         self.capture_info.configure(text=f"0 / {NUM_CAPTURES}{unit} accepted")
         self.guidance_info.configure(
@@ -530,7 +556,7 @@ class CalibrationApp:
         self._refresh_stage_ui()
 
     def start_camera(self):
-        if (self.starting_camera or self.processing_capture or
+        if (self.starting_camera or self.processing_capture or self.processing_verification or
                 self.stage in ("calibrating", "extrinsic_capturing")):
             return
         if self.camera_index is None:
@@ -565,9 +591,15 @@ class CalibrationApp:
             text=f"Camera {self.camera_index}  •  {self.actual_size[0]} × {self.actual_size[1]}"
         )
         method = "two numbered boards" if self.use_two_boards else "the board"
-        self._set_status(
-            f"Take {NUM_CAPTURES} photo sets while moving {method} around the camera view"
-        )
+        if self._calibration_path().is_file():
+            self._set_status(
+                "Saved calibration found — place the board in view and select TEST SAVED CALIBRATION"
+            )
+            self.log("A saved calibration was found. Test it before recalibrating.")
+        else:
+            self._set_status(
+                f"Take {NUM_CAPTURES} photo sets while moving {method} around the camera view"
+            )
         self.log(
             f"Camera {self.camera_index} started at {self.actual_size[0]} × {self.actual_size[1]} "
             f"(requested {requested_width} × {requested_height})"
@@ -587,7 +619,7 @@ class CalibrationApp:
         messagebox.showerror("Camera Error", error)
 
     def stop_camera(self):
-        if (self.starting_camera or self.processing_capture or
+        if (self.starting_camera or self.processing_capture or self.processing_verification or
                 self.stage in ("calibrating", "extrinsic_capturing")):
             return
         self.camera_running = False
@@ -763,7 +795,8 @@ class CalibrationApp:
         self.video_label.configure(image=photo, text="")
 
     def manual_capture(self):
-        if self.current_frame is None or self.stage != "capture" or self.processing_capture:
+        if (self.current_frame is None or self.stage != "capture" or
+                self.processing_capture or self.processing_verification):
             return
         with self.frame_lock:
             frame = self.current_frame.copy()
@@ -781,6 +814,83 @@ class CalibrationApp:
         threading.Thread(
             target=self._detect_capture_worker, args=(frame, file_path), daemon=True,
         ).start()
+
+    def verify_saved_calibration(self):
+        """Check a fresh ChArUco capture against the saved intrinsic calibration."""
+        if (self.current_frame is None or self.stage != "capture" or
+                self.processing_capture or self.processing_verification):
+            return
+        calibration_path = self._calibration_path()
+        if not calibration_path.is_file():
+            self._set_status("No saved calibration exists for this camera", RED)
+            return
+        with self.frame_lock:
+            frame = self.current_frame.copy()
+        self.processing_verification = True
+        self._set_status("Testing the saved calibration…", AMBER)
+        self._refresh_stage_ui()
+        threading.Thread(
+            target=self._verify_saved_calibration_worker, args=(frame, calibration_path), daemon=True,
+        ).start()
+
+    def _verify_saved_calibration_worker(self, frame, calibration_path):
+        try:
+            saved = json.loads(calibration_path.read_text(encoding="utf-8"))
+            camera_matrix = np.asarray(saved["camera_matrix"], dtype=np.float64)
+            dist_coeffs = np.asarray(saved["dist_coeffs"], dtype=np.float64)
+            calibration_size = tuple(saved["image_size"])
+            if len(calibration_size) != 2:
+                raise ValueError("The saved calibration has no valid image size")
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            corners, ids, _, _ = self.charuco_detector.detectBoard(gray)
+            corner_count = len(ids) if ids is not None else 0
+            if corner_count < MIN_CORNERS:
+                raise ValueError(
+                    f"Only {corner_count}/{MIN_CORNERS} board points were found. "
+                    "Show more of the board, improve lighting, and try again."
+                )
+            frame_size = gray.shape[::-1]
+            scaled_matrix = scale_camera_matrix(camera_matrix, calibration_size, frame_size)
+            rvec, tvec, metrics, object_points, _ = estimate_planar_pose(
+                self.board, corners, ids, scaled_matrix, dist_coeffs,
+            )
+            annotated = self._annotate_detected_board(frame, corners, ids)
+            cv2.drawFrameAxes(annotated, scaled_matrix, dist_coeffs, rvec, tvec, 0.05, 4)
+            is_ok = metrics["rms"] <= MAX_VERIFICATION_RMS_PX
+            self.root.after(
+                0, self._verification_complete, annotated, metrics,
+                len(object_points), is_ok,
+            )
+        except Exception as error:
+            self.root.after(0, self._verification_failed, str(error))
+
+    def _verification_complete(self, annotated, metrics, corner_count, is_ok):
+        self.processing_verification = False
+        self._show_frame(annotated)
+        result = "CALIBRATION OK" if is_ok else "RECALIBRATION RECOMMENDED"
+        color = GREEN if is_ok else RED
+        details = (f"{result} — RMS {metrics['rms']:.2f} px "
+                   f"(mean {metrics['mean']:.2f} px, max {metrics['max']:.2f} px; "
+                   f"{corner_count} points)")
+        self._set_status(details, color)
+        self.log(details)
+        self._refresh_stage_ui()
+        messagebox.showinfo(
+            "Calibration check",
+            f"{result}\n\nReprojection RMS: {metrics['rms']:.2f} px\n"
+            f"Required: {MAX_VERIFICATION_RMS_PX:.2f} px or below\n"
+            f"Board points checked: {corner_count}\n\n"
+            + ("The saved calibration is suitable for this camera state."
+               if is_ok else
+               "Focus, lens, camera position, resolution, or the board setup may have changed. Run calibration again."),
+        )
+
+    def _verification_failed(self, error):
+        self.processing_verification = False
+        self._set_status("Calibration could not be checked — show the board clearly", RED)
+        self.log(f"Calibration check failed: {error}")
+        self._refresh_stage_ui()
+        messagebox.showwarning("Calibration check", error)
 
     def _detect_capture_worker(self, frame, file_path):
         """Save, reload and detect one pressed capture away from Tk's UI thread."""
@@ -1339,7 +1449,7 @@ class CalibrationApp:
     def on_closing(self):
         if self.closed:
             return
-        if (self.starting_camera or self.processing_capture or
+        if (self.starting_camera or self.processing_capture or self.processing_verification or
                 self.stage in ("calibrating", "extrinsic_capturing")):
             self._set_status("Please wait for the current step to finish before going back", AMBER)
             return

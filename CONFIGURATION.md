@@ -53,6 +53,12 @@ sizes in millimetres, and OpenCV dictionary name. These must match the actual bo
 `calibration` controls the required photo count, minimum valid photos/corners and
 quality checks. Numerical quality thresholds are for maintainers; operators see
 simple instructions in the app. Standalone board tools read the same parameters.
+After selecting a camera and starting its live feed, **Test Saved Calibration**
+captures one ChArUco-board image and reports the board-pose reprojection RMS. A
+result at or below `calibration.verification_max_rms_px` (default `1.0` pixels)
+means the saved lens calibration is suitable for that test view; a higher result
+recommends recalibration. This is a quick lens/focus/view check, not a replacement
+for verifying final product measurements.
 
 `two_board.enabled` selects the initial Camera Setup method. The operator can also
 switch between **One Board** and **Two Boards** directly in Camera Setup before the
