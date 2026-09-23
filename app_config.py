@@ -12,6 +12,8 @@ if len({c["index"] for c in CONFIG["cameras"]}) != 2:
 for camera in CONFIG["cameras"]:
     if camera['index'] < 0 or len(camera['fourcc']) not in (0, 4):
         raise ValueError("Camera index must be nonnegative; fourcc must be empty or four characters")
+    if camera.get('rotation', 0) not in (0, 90, 180, 270):
+        raise ValueError("Camera rotation must be 0, 90, 180, or 270 degrees clockwise")
     for key in ("width", "height", "fps"):
         if camera[key] <= 0:
             raise ValueError(f"Camera {key} must be positive")

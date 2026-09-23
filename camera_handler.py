@@ -69,6 +69,7 @@ class CameraStream:
         self.resolution_warning = None
         self.stopped = threading.Event()
         spec = camera_config(index)
+        self.rotation = spec.get('rotation', 0)
         if CONFIG['capture']['use_dshow']:
             self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         else:
@@ -112,8 +113,8 @@ class CameraStream:
                 actual = best[2]
                 self.resolution_warning = self._resolution_message(requested, actual)
             _write_cached_resolution(index, signature, actual)
-            self.size = actual
-            self.frame = frame
+            self.size = self._rotated_size(actual)
+            self.frame = self._rotate_frame(frame)
         except Exception:
             self.cap.release()
             raise
@@ -125,6 +126,19 @@ class CameraStream:
             f"Camera {self.index}\nRequested: {requested[0]} x {requested[1]}\n"
             f"Best available size found: {actual[0]} x {actual[1]}"
         )
+
+    def _rotated_size(self, size):
+        """Return frame dimensions after the configured clockwise rotation."""
+        return (size[1], size[0]) if self.rotation in (90, 270) else size
+
+    def _rotate_frame(self, frame):
+        """Apply orientation before any app component sees the camera frame."""
+        rotation_code = {
+            90: cv2.ROTATE_90_CLOCKWISE,
+            180: cv2.ROTATE_180,
+            270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+        }.get(self.rotation)
+        return cv2.rotate(frame, rotation_code) if rotation_code is not None else frame
 
     def _try_resolution(self, size, fps):
         """Read several frames after negotiation to reject stale driver buffers."""
@@ -146,7 +160,7 @@ class CameraStream:
             while not self.stopped.is_set():
                 ok, frame = self.cap.read()
                 with self.lock:
-                    self.frame = frame if ok else None
+                    self.frame = self._rotate_frame(frame) if ok and frame is not None else None
                 if not ok:
                     time.sleep(0.05)
         except Exception as error:

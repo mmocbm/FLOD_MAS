@@ -12,6 +12,13 @@ calibration image sizes. `fps` is a driver request, not a guaranteed throughput.
 four-character format such as `MJPG`. Calibration and surface files are relative
 to this directory unless an absolute path is supplied.
 
+`rotation` sets each camera's clockwise software rotation. Allowed values are `0`,
+`90`, `180`, and `270`. Rotation is applied in the shared camera stream, so setup,
+preview, masks, calibration, and inspection all use the same orientation. A 90° or
+270° rotation swaps the output width and height. After changing rotation, recalibrate
+that camera and recreate its saved masks; calibration from another orientation is
+not geometrically valid.
+
 All camera acquisition goes through the same configured capture path. The app
 checks actual frame sizes. If the requested size is unavailable, it tests the
 `fallback_resolutions` list and selects the largest actual size that works (by pixel

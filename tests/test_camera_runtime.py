@@ -51,6 +51,20 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(stream.cap.released)
 
     @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_rotation_is_applied_to_every_frame_and_reported_size(self, _):
+        spec = CONFIG['cameras'][0]
+        with patch.dict(spec, {'rotation': 90}):
+            stream = CameraStream(spec['index'])
+            try:
+                ok, frame = stream.read()
+                self.assertTrue(ok)
+                self.assertEqual(stream.size, (spec['height'], spec['width']))
+                self.assertEqual(frame.shape[:2], (spec['width'], spec['height']))
+            finally:
+                stream.release()
+                stream.thread.join(1)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
     def test_dshow_can_be_enabled(self, video_capture):
         with patch.dict(CONFIG['capture'], {'use_dshow': True}):
             stream = CameraStream(CONFIG['cameras'][0]['index'])
