@@ -11,13 +11,14 @@ import numpy as np
 from camera_handler import CameraHandler
 import datetime
 import sys
+import math
 from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
-from Image_Processing.color_mask_generator import ColorMaskGenerator
 from CalibrateAPP.calibration_ui import CalibrationApp
-from measure.aruco_plane import (
-    ArucoPlaneEstimator, annotate_mask_measurements,
-    annotate_mask_pixel_measurements,
+from crop_processing import (
+    definition_fits_image, extract_rotated_crop,
+    load_crop_store, normalized_definition, pixel_definition,
+    parallel_line_angle, rotated_crop_corners, save_crop_store, stack_crop_results,
 )
 from ui_theme import (
     COLORS as C, FONT, button as themed_button, card as themed_card,
@@ -42,7 +43,9 @@ BAUD_RATE = CONFIG['serial']['baud_rate']
 # Camera configuration
 CAMERA_INDEX_1, CAMERA_INDEX_2 = [c['index'] for c in CONFIG['cameras']]
 CALIB_FILE_1, CALIB_FILE_2 = [project_path(c['calibration_file']) for c in CONFIG['cameras']]
-Extrinsics_FILE_1, Extrinsics_FILE_2 = [project_path(c['extrinsics_file']) for c in CONFIG['cameras']]
+CROP_DEFINITIONS_FILE = project_path(CONFIG['crop_setup']['definitions_file'])
+CROP_RATIO = CONFIG['crop_setup']['aspect_ratio'][0] / CONFIG['crop_setup']['aspect_ratio'][1]
+CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
 
 # Fixed sizes only (no patterns)
 FIXED_SIZES = CONFIG['inspection']['sizes']
@@ -85,6 +88,10 @@ class IndustrialDashboard:
 
         self.result_image_1 = None
         self.result_image_2 = None
+
+        # Two persistent, independently deskewed crop regions per camera.
+        self.crop_definitions = load_crop_store(CROP_DEFINITIONS_FILE)
+        self.crop_setup_active = False
 
         # --- maximized camera mode ---
         self.maximized_camera = None  # None, 1, or 2
@@ -562,7 +569,7 @@ class IndustrialDashboard:
             font=(FONT, 11, "bold"), bd=0, highlightthickness=0,
         )
         check.pack(side=tk.LEFT)
-        themed_button(footer, "COLOR MASK", self.open_mask_setup_window,
+        themed_button(footer, "CROP SETUP", self.open_crop_setup_window,
                       role="purple", width=13).pack(side=tk.RIGHT, padx=(8, 0))
         themed_button(footer, "SAVE PROFILE", self.save_settings,
                       role="primary", width=14).pack(side=tk.RIGHT)
@@ -656,213 +663,355 @@ class IndustrialDashboard:
         self.video_paused = False
 
     def open_mask_setup_window(self):
+        """Backward-compatible name for the crop setup that replaced masks."""
+        return self.open_crop_setup_window()
+    # ==============================================================
+    # two-crop setup (undistorted image, 4:1 crop, two-point deskew)
+    # ==============================================================
+    def open_crop_setup_window(self):
         self.size_win.destroy()
+        self.crop_win = tk.Toplevel(self.root)
+        self.crop_win.geometry(
+            f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{self.root.winfo_x()}+{self.root.winfo_y()}"
+        )
+        self.crop_win.configure(bg=C["bg"])
+        self.crop_win.overrideredirect(True)
+        self.crop_win.attributes("-topmost", True)
 
-        self.mask_win = tk.Toplevel(self.root)
-        self.mask_win.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        self.mask_win.configure(bg=C["bg"])
-        self.mask_win.overrideredirect(True)
-        self.mask_win.attributes("-topmost", True)
+        self.crop_setup_active = True
+        self.crop_selected_camera = 1
+        self.crop_selected_index = 0
+        self.crop_frozen = False
+        self.crop_live_frame = None
+        self.crop_frozen_frame = None
+        self.crop_edit = None
+        self.crop_edit_mode = "draw"
+        self.crop_line_points = []
+        self.crop_drag = None
+        self.video_paused = False
 
-        self.mask_setup_active = True
-        self.mask_selected_camera = 1
-        self.video_paused = False  # Resume video for mask setup
-        self.mask_frozen = False
-        self.mask_frozen_frame = None
-        self.mask_start_x = None
-        self.mask_start_y = None
-        self.mask_rect = None
-        self.mask_rect_coords = None
-        self.mask_pick_point = None
-        self.mask_pick_circle = None
-
-        header = tk.Frame(self.mask_win, bg=C["surface"], height=TITLE_BAR_HEIGHT,
-                          highlightbackground=C["border"], highlightthickness=1)
+        header = tk.Frame(
+            self.crop_win, bg=C["surface"], height=TITLE_BAR_HEIGHT,
+            highlightbackground=C["border"], highlightthickness=1,
+        )
         header.pack(fill=tk.X)
         header.pack_propagate(False)
 
-        def back_to_size():
-            self.mask_setup_active = False
-            self.mask_frozen = False
+        def back_to_profile():
+            self.crop_setup_active = False
+            self.crop_frozen = False
             self.video_paused = True
-            self.mask_win.destroy()
+            self.crop_win.destroy()
             self.open_size_window()
 
-        themed_button(header, "←  PROFILE", back_to_size, role="quiet",
+        themed_button(header, "←  PROFILE", back_to_profile, role="quiet",
                       padx=16, pady=6).pack(side=tk.LEFT, fill=tk.Y)
-
-        tk.Label(
-            header, text="COLOR MASK SETUP",
-            fg=C["muted"], bg=C["surface"], font=(FONT, 10, "bold"),
-        ).pack(side=tk.LEFT, padx=10)
+        tk.Label(header, text="TWO-CROP SETUP", fg=C["muted"], bg=C["surface"],
+                 font=(FONT, 10, "bold")).pack(side=tk.LEFT, padx=10)
         themed_button(header, "✕", self.close_application, role="quiet",
                       padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
 
-        content = tk.Frame(self.mask_win, bg=C["bg"])
+        content = tk.Frame(self.crop_win, bg=C["bg"])
         content.pack(expand=True, fill=tk.BOTH, padx=18, pady=14)
+        controls = themed_card(content)
+        controls.pack(fill=tk.X, pady=(0, 8))
 
-        cam_sel_frame = themed_card(content)
-        cam_sel_frame.pack(fill=tk.X, pady=(0, 10))
-
-        text_box = tk.Frame(cam_sel_frame, bg=C["card"])
-        text_box.pack(side=tk.LEFT, padx=(16, 24), pady=10)
-        section_label(text_box, "Mask source").pack(anchor="w")
-        tk.Label(text_box, text="Capture, pick a color, then draw the product area",
+        text_box = tk.Frame(controls, bg=C["card"])
+        text_box.pack(side=tk.LEFT, padx=(14, 18), pady=8)
+        section_label(text_box, "Manual regions").pack(anchor="w")
+        tk.Label(text_box, text="Two 4:1 deskewed crops per camera",
                  fg=C["text_soft"], bg=C["card"], font=(FONT, 9)).pack(anchor="w")
 
-        def select_cam(c):
-            if getattr(self, "mask_frozen", False): return
-            self.mask_selected_camera = c
-            set_button_role(btn_cam1, "selected" if c == 1 else "secondary")
-            set_button_role(btn_cam2, "selected" if c == 2 else "secondary")
-
-        btn_cam1 = themed_button(cam_sel_frame, "CAMERA 1", lambda: select_cam(1),
-                                 role="selected", width=10, pady=9)
-        btn_cam1.pack(side=tk.LEFT, padx=4, pady=10)
-        btn_cam2 = themed_button(cam_sel_frame, "CAMERA 2", lambda: select_cam(2),
-                                 role="secondary", width=10, pady=9)
-        btn_cam2.pack(side=tk.LEFT, padx=4, pady=10)
-
-        themed_button(cam_sel_frame, "SAVE MASK", self.save_mask_frame,
-                      role="primary", width=11, pady=9).pack(side=tk.RIGHT, padx=(4, 14), pady=10)
-        themed_button(cam_sel_frame, "CLEAR", self.clear_mask_frame,
-                      role="danger", width=8, pady=9).pack(side=tk.RIGHT, padx=4, pady=10)
-        themed_button(cam_sel_frame, "CAPTURE", self.capture_mask_frame,
-                      role="blue", width=10, pady=9).pack(side=tk.RIGHT, padx=4, pady=10)
-
-        self.mask_canvas = tk.Canvas(content, bg=C["camera"], highlightthickness=1,
-                                     highlightbackground=C["border"])
-        self.mask_canvas.pack(fill=tk.BOTH, expand=True)
-
-        self.mask_canvas.bind("<ButtonPress-1>", self.on_mask_press)
-        self.mask_canvas.bind("<B1-Motion>", self.on_mask_drag)
-        self.mask_canvas.bind("<ButtonRelease-1>", self.on_mask_release)
-
-    def _display_mask_video_frame(self, frame):
-        if not hasattr(self, 'mask_canvas') or not self.mask_canvas.winfo_exists():
-            return
-        cw = self.mask_canvas.winfo_width()
-        ch = self.mask_canvas.winfo_height()
-        if cw <= 1 or ch <= 1:
-            cw = WINDOW_WIDTH - 40
-            ch = WINDOW_HEIGHT - TITLE_BAR_HEIGHT - 60
-
-        if cw > 1 and ch > 1:
-            frame_resized = cv2.resize(frame, (cw, ch))
-            pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
-            self.tk_image_mask = ImageTk.PhotoImage(pil_img)
-            self.mask_canvas.delete("img")
-            self.mask_canvas.create_image(cw // 2, ch // 2, image=self.tk_image_mask, anchor=tk.CENTER, tags="img")
-            self.mask_canvas.tag_lower("img")
-
-    def capture_mask_frame(self):
-        self.mask_frozen = True
-
-    def clear_mask_frame(self):
-        self.mask_frozen = False
-        self.mask_frozen_frame = None
-        if getattr(self, "mask_rect", None):
-            self.mask_canvas.delete(self.mask_rect)
-            self.mask_rect = None
-        self.mask_rect_coords = None
-        if getattr(self, "mask_pick_circle", None):
-            self.mask_canvas.delete(self.mask_pick_circle)
-            self.mask_pick_circle = None
-        self.mask_pick_point = None
-
-    def save_mask_frame(self):
-        if not getattr(self, "mask_frozen", False) or getattr(self, "mask_frozen_frame", None) is None:
-            self._show_error_popup("Capture a frame first!")
-            return
-        if not getattr(self, "mask_pick_point", None):
-            self._show_error_popup("Click to pick a color point first!")
-            return
-        if not getattr(self, "mask_rect_coords", None):
-            self._show_error_popup("Draw a region first!")
-            return
-
-        cw = self.mask_canvas.winfo_width()
-        ch = self.mask_canvas.winfo_height()
-        
-        orig_h, orig_w = self.mask_frozen_frame.shape[:2]
-        
-        # Convert pick point
-        px, py = self.mask_pick_point
-        px_orig = int(px * orig_w / cw)
-        py_orig = int(py * orig_h / ch)
-        px_orig = max(0, min(orig_w - 1, px_orig))
-        py_orig = max(0, min(orig_h - 1, py_orig))
-
-        # Convert region rect
-        x1, y1, x2, y2 = self.mask_rect_coords
-        x1_orig = int(x1 * orig_w / cw)
-        x2_orig = int(x2 * orig_w / cw)
-        y1_orig = int(y1 * orig_h / ch)
-        y2_orig = int(y2 * orig_h / ch)
-
-        x1_orig, x2_orig = sorted([x1_orig, x2_orig])
-        y1_orig, y2_orig = sorted([y1_orig, y2_orig])
-
-        x1_orig = max(0, min(orig_w - 1, x1_orig))
-        x2_orig = max(0, min(orig_w - 1, x2_orig))
-        y1_orig = max(0, min(orig_h - 1, y1_orig))
-        y2_orig = max(0, min(orig_h - 1, y2_orig))
-        
-        region_orig = (x1_orig, y1_orig, x2_orig - x1_orig, y2_orig - y1_orig)
-
-        generator = ColorMaskGenerator()
-        mask = generator.create_mask(self.mask_frozen_frame, region_orig, (px_orig, py_orig))
-
-        filename = f"mask_{self.mask_selected_camera}.png"
-        cv2.imwrite(filename, mask)
-        
-        self.clear_mask_frame() # unfreeze
-        self._show_mask_success(filename)
-
-    def _show_mask_success(self, filename):
-        pop = tk.Toplevel(self.mask_win)
-        pop.overrideredirect(True)
-        pop.attributes("-topmost", True)
-        pop.configure(bg=C["card"], highlightbackground=C["border_strong"], highlightthickness=1)
-        px = self.mask_win.winfo_x() + (WINDOW_WIDTH // 2) - 160
-        py = self.mask_win.winfo_y() + (WINDOW_HEIGHT // 2) - 80
-        pop.geometry(f"320x160+{px}+{py}")
-        tk.Label(pop, text="✓", fg=C["success"], bg=C["card"], font=(FONT, 32, "bold")).pack(pady=(14, 0))
-        tk.Label(pop, text=f"Saved {filename}", fg=C["text"], bg=C["card"],
-                 font=(FONT, 13, "bold")).pack()
-        themed_button(pop, "DONE", pop.destroy, role="primary", width=10,
-                      pady=7).pack(pady=14)
-
-    def on_mask_press(self, event):
-        if not getattr(self, "mask_frozen", False): return
-        self.mask_start_x = event.x
-        self.mask_start_y = event.y
-
-    def on_mask_drag(self, event):
-        if not getattr(self, "mask_frozen", False): return
-        dx = abs(event.x - self.mask_start_x)
-        dy = abs(event.y - self.mask_start_y)
-        if dx > 3 or dy > 3:
-            if not getattr(self, "mask_rect", None):
-                self.mask_rect = self.mask_canvas.create_rectangle(self.mask_start_x, self.mask_start_y, event.x, event.y, outline="red", width=2)
-            else:
-                self.mask_canvas.coords(self.mask_rect, self.mask_start_x, self.mask_start_y, event.x, event.y)
-
-    def on_mask_release(self, event):
-        if not getattr(self, "mask_frozen", False): return
-        dx = abs(event.x - self.mask_start_x)
-        dy = abs(event.y - self.mask_start_y)
-        if dx <= 3 and dy <= 3:
-            self.mask_pick_point = (event.x, event.y)
-            if getattr(self, "mask_pick_circle", None):
-                self.mask_canvas.delete(self.mask_pick_circle)
-            self.mask_pick_circle = self.mask_canvas.create_oval(
-                event.x-4, event.y-4, event.x+4, event.y+4, outline=C["success"], width=2
+        self.crop_camera_buttons = {}
+        for camera in (1, 2):
+            button = themed_button(
+                controls, f"CAMERA {camera}",
+                lambda value=camera: self._select_crop_camera(value),
+                role="selected" if camera == 1 else "secondary", width=9, pady=8,
             )
+            button.pack(side=tk.LEFT, padx=3, pady=9)
+            self.crop_camera_buttons[camera] = button
+
+        self.crop_index_buttons = {}
+        for crop_index in (0, 1):
+            button = themed_button(
+                controls, f"CROP {crop_index + 1}",
+                lambda value=crop_index: self._select_crop_index(value),
+                role="selected" if crop_index == 0 else "secondary", width=8, pady=8,
+            )
+            button.pack(side=tk.LEFT, padx=3, pady=9)
+            self.crop_index_buttons[crop_index] = button
+
+        themed_button(controls, "CAPTURE", self.capture_crop_frame,
+                      role="blue", width=9, pady=8).pack(side=tk.RIGHT, padx=(3, 12), pady=9)
+        themed_button(controls, "SAVE CROP", self.save_crop_region,
+                      role="primary", width=10, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
+        themed_button(controls, "CLEAR", self.clear_crop_region,
+                      role="danger", width=7, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
+        themed_button(controls, "SET LINE", self.start_crop_rotation_line,
+                      role="purple", width=9, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
+
+        self.crop_status = tk.Label(
+            content, text="Select a camera and crop, then capture an undistorted frame",
+            bg=C["surface_2"], fg=C["text_soft"], font=(FONT, 9, "bold"),
+            anchor="w", padx=12, pady=7,
+        )
+        self.crop_status.pack(fill=tk.X, pady=(0, 8))
+
+        self.crop_canvas = tk.Canvas(
+            content, bg=C["camera"], highlightthickness=1,
+            highlightbackground=C["border"], cursor="crosshair",
+        )
+        self.crop_canvas.pack(fill=tk.BOTH, expand=True)
+        self.crop_canvas.bind("<ButtonPress-1>", self.on_crop_press)
+        self.crop_canvas.bind("<B1-Motion>", self.on_crop_drag)
+        self.crop_canvas.bind("<ButtonRelease-1>", self.on_crop_release)
+
+    def _select_crop_camera(self, camera):
+        self.crop_selected_camera = camera
+        self.crop_frozen = False
+        self.crop_live_frame = None
+        self.crop_frozen_frame = None
+        self.crop_edit = None
+        self.crop_line_points = []
+        for number, button in self.crop_camera_buttons.items():
+            set_button_role(button, "selected" if number == camera else "secondary")
+        self.crop_status.configure(
+            text=f"Camera {camera} selected — capture an undistorted frame"
+        )
+
+    def _select_crop_index(self, crop_index):
+        self.crop_selected_index = crop_index
+        for number, button in self.crop_index_buttons.items():
+            set_button_role(button, "selected" if number == crop_index else "secondary")
+        if self.crop_frozen_frame is not None:
+            self._load_selected_crop_for_edit()
+            self._display_crop_setup_frame(self.crop_frozen_frame)
+        self.crop_status.configure(
+            text=f"Camera {self.crop_selected_camera}, Crop {crop_index + 1} selected"
+        )
+
+    def capture_crop_frame(self):
+        if self.crop_live_frame is None:
+            self._show_error_popup("No undistorted camera frame is available.")
+            return
+        self.crop_frozen_frame = self.crop_live_frame.copy()
+        self.crop_frozen = True
+        self.crop_edit_mode = "draw"
+        self._load_selected_crop_for_edit()
+        self._display_crop_setup_frame(self.crop_frozen_frame)
+        self.crop_status.configure(
+            text="Drag to create a 4:1 crop. Drag inside to move; drag a corner to resize."
+        )
+
+    def _load_selected_crop_for_edit(self):
+        saved = self.crop_definitions["cameras"][str(self.crop_selected_camera)][
+            self.crop_selected_index
+        ]
+        if saved is None or self.crop_frozen_frame is None:
+            self.crop_edit = None
+            self.crop_line_points = []
+            return
+        height, width = self.crop_frozen_frame.shape[:2]
+        self.crop_edit = pixel_definition(saved, (width, height), CROP_RATIO)
+        self.crop_line_points = [list(point) for point in self.crop_edit["line"]]
+
+    def start_crop_rotation_line(self):
+        if not self.crop_frozen or self.crop_edit is None:
+            self._show_error_popup("Capture a frame and draw the crop first.")
+            return
+        self.crop_edit_mode = "line"
+        self.crop_line_points = []
+        self.crop_status.configure(text="Click two points along the direction that must become horizontal")
+        self._redraw_crop_overlay()
+
+    def clear_crop_region(self):
+        self.crop_edit = None
+        self.crop_line_points = []
+        self.crop_edit_mode = "draw"
+        camera_crops = self.crop_definitions["cameras"][str(self.crop_selected_camera)]
+        camera_crops[self.crop_selected_index] = None
+        save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
+        self._redraw_crop_overlay()
+        self.crop_status.configure(text="Crop cleared — drag to create a new 4:1 region")
+
+    def save_crop_region(self):
+        if not self.crop_frozen or self.crop_frozen_frame is None or self.crop_edit is None:
+            self._show_error_popup("Capture a frame and draw the crop first.")
+            return
+        if len(self.crop_line_points) != 2:
+            self._show_error_popup("Select SET LINE and click two rotation points first.")
+            return
+        height, width = self.crop_frozen_frame.shape[:2]
+        definition = normalized_definition(
+            self.crop_edit["center"], self.crop_edit["width"],
+            self.crop_edit["angle_degrees"], self.crop_line_points, (width, height),
+        )
+        if not definition_fits_image(definition, (width, height), CROP_RATIO):
+            self._show_error_popup("The rotated crop must remain completely inside the image.")
+            return
+        self.crop_definitions["cameras"][str(self.crop_selected_camera)][
+            self.crop_selected_index
+        ] = definition
+        save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
+        self.crop_status.configure(
+            text=(f"Saved Camera {self.crop_selected_camera}, Crop "
+                  f"{self.crop_selected_index + 1} at {self.crop_edit['angle_degrees']:.1f}°")
+        )
+
+    def _display_crop_setup_frame(self, frame):
+        if not hasattr(self, "crop_canvas") or not self.crop_canvas.winfo_exists():
+            return
+        self.crop_canvas.update_idletasks()
+        canvas_width = max(2, self.crop_canvas.winfo_width())
+        canvas_height = max(2, self.crop_canvas.winfo_height())
+        image_height, image_width = frame.shape[:2]
+        scale = min(canvas_width / image_width, canvas_height / image_height)
+        display_size = (max(1, round(image_width * scale)),
+                        max(1, round(image_height * scale)))
+        resized = cv2.resize(frame, display_size, interpolation=cv2.INTER_AREA)
+        self.crop_display_scale = scale
+        self.crop_display_offset = ((canvas_width - display_size[0]) / 2.0,
+                                    (canvas_height - display_size[1]) / 2.0)
+        image = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)))
+        self.tk_image_crop = image
+        self.crop_canvas.delete("all")
+        self.crop_canvas.create_image(
+            self.crop_display_offset[0], self.crop_display_offset[1], image=image,
+            anchor=tk.NW, tags="crop_image",
+        )
+        self._redraw_crop_overlay()
+
+    def _canvas_to_crop_image(self, x, y):
+        if self.crop_frozen_frame is None or not hasattr(self, 'crop_display_scale'):
+            return None
+        offset_x, offset_y = self.crop_display_offset
+        image_x = (x - offset_x) / self.crop_display_scale
+        image_y = (y - offset_y) / self.crop_display_scale
+        height, width = self.crop_frozen_frame.shape[:2]
+        if not (0 <= image_x < width and 0 <= image_y < height):
+            return None
+        return np.array([image_x, image_y], dtype=np.float64)
+
+    def _crop_image_to_canvas(self, point):
+        offset_x, offset_y = self.crop_display_offset
+        return np.asarray(point) * self.crop_display_scale + np.array([offset_x, offset_y])
+
+    def _redraw_crop_overlay(self):
+        if not hasattr(self, 'crop_canvas') or not self.crop_canvas.winfo_exists():
+            return
+        self.crop_canvas.delete("crop_overlay")
+        if self.crop_edit is not None:
+            corners = rotated_crop_corners(
+                self.crop_edit["center"], self.crop_edit["width"], CROP_RATIO,
+                self.crop_edit.get("angle_degrees", 0.0),
+            )
+            canvas_corners = np.asarray(
+                [self._crop_image_to_canvas(point) for point in corners]
+            )
+            flattened = canvas_corners.reshape(-1).tolist()
+            self.crop_canvas.create_polygon(
+                *flattened, outline=C["danger"], fill="", width=3,
+                tags="crop_overlay",
+            )
+            for point in canvas_corners:
+                x, y = point
+                self.crop_canvas.create_rectangle(
+                    x - 5, y - 5, x + 5, y + 5, fill=C["danger"], outline="white",
+                    tags="crop_overlay",
+                )
+        if self.crop_line_points:
+            canvas_points = [self._crop_image_to_canvas(point)
+                             for point in self.crop_line_points]
+            for point in canvas_points:
+                x, y = point
+                self.crop_canvas.create_oval(
+                    x - 6, y - 6, x + 6, y + 6, fill=C["warning"], outline="white",
+                    tags="crop_overlay",
+                )
+            if len(canvas_points) == 2:
+                self.crop_canvas.create_line(
+                    *canvas_points[0], *canvas_points[1], fill=C["warning"],
+                    width=3, arrow=tk.LAST, tags="crop_overlay",
+                )
+
+    def on_crop_press(self, event):
+        if not self.crop_frozen:
+            return
+        point = self._canvas_to_crop_image(event.x, event.y)
+        if point is None:
+            return
+        if self.crop_edit_mode == "line":
+            self.crop_line_points.append(point.tolist())
+            if len(self.crop_line_points) == 2:
+                first, second = map(np.asarray, self.crop_line_points)
+                delta = second - first
+                if np.linalg.norm(delta) < 5:
+                    self.crop_line_points = []
+                    self.crop_status.configure(text="Rotation points are too close — click two wider points")
+                else:
+                    self.crop_edit["angle_degrees"] = parallel_line_angle(first, second)
+                    self.crop_edit["line"] = [first.tolist(), second.tolist()]
+                    self.crop_edit_mode = "draw"
+                    self.crop_status.configure(
+                        text=f"Deskew angle {self.crop_edit['angle_degrees']:.1f}° — save this crop"
+                    )
+            self._redraw_crop_overlay()
+            return
+
+        self.crop_drag = {"start": point, "kind": "new"}
+        if self.crop_edit is not None:
+            corners = rotated_crop_corners(
+                self.crop_edit["center"], self.crop_edit["width"], CROP_RATIO,
+                self.crop_edit.get("angle_degrees", 0.0),
+            )
+            threshold = 12.0 / self.crop_display_scale
+            distances = np.linalg.norm(corners - point, axis=1)
+            if float(distances.min()) <= threshold:
+                self.crop_drag = {"start": point, "kind": "resize"}
+            elif cv2.pointPolygonTest(corners.astype(np.float32), tuple(point), False) >= 0:
+                self.crop_drag = {
+                    "start": point, "kind": "move",
+                    "center": np.asarray(self.crop_edit["center"], dtype=np.float64),
+                }
+
+    def on_crop_drag(self, event):
+        if not self.crop_frozen or self.crop_drag is None or self.crop_edit_mode == "line":
+            return
+        point = self._canvas_to_crop_image(event.x, event.y)
+        if point is None:
+            return
+        start = self.crop_drag["start"]
+        kind = self.crop_drag["kind"]
+        if kind == "move":
+            self.crop_edit["center"] = (self.crop_drag["center"] + point - start).tolist()
+        elif kind == "resize":
+            center = np.asarray(self.crop_edit["center"], dtype=np.float64)
+            radians = math.radians(self.crop_edit.get("angle_degrees", 0.0))
+            rotation_inverse = np.array([
+                [math.cos(radians), math.sin(radians)],
+                [-math.sin(radians), math.cos(radians)],
+            ])
+            local = rotation_inverse @ (point - center)
+            self.crop_edit["width"] = max(40.0, 2.0 * max(abs(local[0]), CROP_RATIO * abs(local[1])))
+            self.crop_edit["height"] = self.crop_edit["width"] / CROP_RATIO
         else:
-            if getattr(self, "mask_rect", None):
-                self.mask_canvas.coords(self.mask_rect, self.mask_start_x, self.mask_start_y, event.x, event.y)
-                self.mask_rect_coords = (self.mask_start_x, self.mask_start_y, event.x, event.y)
+            delta = point - start
+            width = max(abs(delta[0]), CROP_RATIO * abs(delta[1]), 40.0)
+            adjusted = np.array([
+                math.copysign(width, delta[0] if delta[0] else 1),
+                math.copysign(width / CROP_RATIO, delta[1] if delta[1] else 1),
+            ])
+            self.crop_edit = {
+                "center": (start + adjusted / 2.0).tolist(),
+                "width": width, "height": width / CROP_RATIO,
+                "angle_degrees": 0.0, "line": [],
+            }
+            self.crop_line_points = []
+        self._redraw_crop_overlay()
+
+    def on_crop_release(self, _event):
+        self.crop_drag = None
 
     # ==============================================================
     # image panel (dual canvases + zoom toolbars)
@@ -1107,16 +1256,13 @@ class IndustrialDashboard:
             # Force layout update so canvas sizes are correct
             self.root.update_idletasks()
             
-            if getattr(self, "mask_setup_active", False):
-                if getattr(self, "mask_frozen", False):
-                    if not hasattr(self, "mask_frozen_frame") or self.mask_frozen_frame is None:
-                        cam_sel = getattr(self, "mask_selected_camera", 1)
-                        self.mask_frozen_frame = (raw1 if cam_sel == 1 else raw2).copy()
-                        self._display_mask_video_frame(self.mask_frozen_frame)
-                else:
-                    cam_sel = getattr(self, "mask_selected_camera", 1)
-                    frame = raw1 if cam_sel == 1 else raw2
-                    self._display_mask_video_frame(frame)
+            if getattr(self, "crop_setup_active", False):
+                if not self.crop_frozen:
+                    camera = self.camera1 if self.crop_selected_camera == 1 else self.camera2
+                    frame = camera.get_undistorted_frame()
+                    if frame is not None:
+                        self.crop_live_frame = frame.copy()
+                        self._display_crop_setup_frame(self.crop_live_frame)
             else:
                 if self.maximized_camera is None:
                     # Show both
@@ -1154,10 +1300,14 @@ class IndustrialDashboard:
                 cw = (WINDOW_WIDTH // 2) - 10
                 ch = WINDOW_HEIGHT - TITLE_BAR_HEIGHT - BOTTOM_PANEL_HEIGHT - 40
 
-        preview_scale = min(1.0, CONFIG['preview']['max_width'] / cw,
-                            CONFIG['preview']['max_height'] / ch)
-        frame_resized = cv2.resize(frame, (max(1, int(cw * preview_scale)),
-                                          max(1, int(ch * preview_scale))))
+        frame_height, frame_width = frame.shape[:2]
+        preview_scale = min(cw / frame_width, ch / frame_height)
+        frame_resized = cv2.resize(
+            frame,
+            (max(1, int(frame_width * preview_scale)),
+             max(1, int(frame_height * preview_scale))),
+            interpolation=cv2.INTER_AREA if preview_scale < 1 else cv2.INTER_LINEAR,
+        )
         pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
 
         if canvas_num == 1:
@@ -1204,6 +1354,14 @@ class IndustrialDashboard:
             self._show_error_popup("Set Size First")
             return False
 
+        camera_number = 1 if side == "L" else 2
+        saved_crops = self.crop_definitions["cameras"][str(camera_number)]
+        if len(saved_crops) != 2 or any(crop is None for crop in saved_crops):
+            self._show_error_popup(
+                f"Set up both crops for Camera {camera_number} before inspection."
+            )
+            return False
+
         # Disable both detection buttons while processing
         self.inspection_busy = True
         self.detect_btn_L.config(state=tk.DISABLED)
@@ -1228,142 +1386,63 @@ class IndustrialDashboard:
         self.update_progress(100, "Inspection could not be completed")
 
     def _simulate_detection(self, side):
-        """
-        Placeholder for actual detection.
-        Maximizes the selected camera, highlights it with a red border,
-        simulates processing, then restores dual view.
-        """
-        import os
-        import datetime
-        
-        # Determine camera number and canvas
+        """Save full frames and prepare two independent deskewed model inputs."""
         if side == "L":
             camera_num = 1
             canvas = self.canvas_1
             cam_name = "Camera 1"
             _, frame = self.camera1.get_raw_frame_with_ret()
             frame_undist = self.camera1.get_undistorted_frame()
-            mask_path = "mask_1.png"
-            calibration_path = CALIB_FILE_1
-            camera_handler = self.camera1
         else:
             camera_num = 2
             canvas = self.canvas_2
             cam_name = "Camera 2"
             _, frame = self.camera2.get_raw_frame_with_ret()
             frame_undist = self.camera2.get_undistorted_frame()
-            mask_path = "mask_2.png"
-            calibration_path = CALIB_FILE_2
-            camera_handler = self.camera2
 
         if frame is None:
             raise RuntimeError(f"Camera {camera_num} did not return a frame")
+        if frame_undist is None:
+            raise RuntimeError(f"Camera {camera_num} could not produce an undistorted frame")
 
-        if frame is not None:
-            ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
-            orig_dir = os.path.join("Dataset_capture", f"Camera{camera_num}", "Original")
-            undist_dir = os.path.join("Dataset_capture", f"Camera{camera_num}", "Undistorted")
-            os.makedirs(orig_dir, exist_ok=True)
-            os.makedirs(undist_dir, exist_ok=True)
-            
-            cv2.imwrite(os.path.join(orig_dir, f"frame_{ts}.jpg"), frame)
-            if frame_undist is not None:
-                cv2.imwrite(os.path.join(undist_dir, f"frame_{ts}.jpg"), frame_undist)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+        camera_dir = os.path.join("Dataset_capture", f"Camera{camera_num}")
+        original_dir = os.path.join(camera_dir, "Original")
+        undistorted_dir = os.path.join(camera_dir, "Undistorted")
+        crop_dirs = [os.path.join(camera_dir, "Crop1"),
+                     os.path.join(camera_dir, "Crop2")]
+        for folder in (original_dir, undistorted_dir, *crop_dirs):
+            os.makedirs(folder, exist_ok=True)
 
-        display_frame = frame
-        marker_plane = None
-        estimator = None
-        marker_mode = not CONFIG['measurement_surface']['enabled']
-        marker_warning = None
-        if marker_mode:
-            try:
-                estimator = ArucoPlaneEstimator.from_calibration_file(
-                    calibration_path, CONFIG['measurement_surface'],
-                )
-                marker_plane = estimator.detect(frame_undist, image_is_undistorted=True)
-                display_frame = estimator.annotate(
-                    frame_undist, marker_plane, image_is_undistorted=True,
-                )
-                print(
-                    f"Camera {camera_num}: measurement marker "
-                    f"{CONFIG['measurement_surface']['aruco_marker_id']} ready; "
-                    f"pose RMS {marker_plane.reprojection_rms_px:.3f}px"
-                )
-                self.root.after(
-                    0, self.update_progress, 100,
-                    f"Camera {camera_num}: measurement marker ready",
-                )
-            except Exception as error:
-                print(f"Camera {camera_num} marker measurement error: {error}")
-                marker_warning = (
-                    "WARNING: real measurements were not calculated because "
-                    "marker 0 was not found — showing pixel measurements"
-                )
-                display_frame = frame_undist if frame_undist is not None else frame
-                self.root.after(0, self.set_pass_fail, "WARNING")
-                self.root.after(0, self.update_progress, 100, marker_warning)
-        if frame is not None and os.path.exists(mask_path):
-            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-            if mask is not None:
-                if mask.shape[:2] != frame.shape[:2]:
-                    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                if marker_mode:
-                    undistorted_mask = camera_handler.undistorter.undistort(mask)
-                    undistorted_mask = np.where(undistorted_mask > 127, 255, 0).astype(np.uint8)
-                    if marker_plane is not None:
-                        display_frame, measurements = annotate_mask_measurements(
-                            display_frame, undistorted_mask, marker_plane,
-                        )
-                    else:
-                        display_frame, measurements = annotate_mask_pixel_measurements(
-                            display_frame, undistorted_mask,
-                        )
-                    if measurements and marker_plane is not None:
-                        summary = ", ".join(
-                            f"{item['length_mm']:.1f} x {item['width_mm']:.1f} mm"
-                            for item in measurements
-                        )
-                        print(f"Camera {camera_num} measurements: {summary}")
-                        self.root.after(
-                            0, self.update_progress, 100,
-                            f"Camera {camera_num}: {len(measurements)} item(s) measured",
-                        )
-                    elif measurements:
-                        summary = ", ".join(
-                            f"{item['length_px']:.1f} x {item['width_px']:.1f} px"
-                            for item in measurements
-                        )
-                        print(f"Camera {camera_num} pixel measurements: {summary}")
-                        self.root.after(0, self.set_pass_fail, "WARNING")
-                        self.root.after(
-                            0, self.update_progress, 100,
-                            f"WARNING: marker not found; {len(measurements)} item(s) measured in pixels only",
-                        )
-                    else:
-                        self.root.after(
-                            0, self.update_progress, 100,
-                            (f"Camera {camera_num}: marker ready, no masked item found"
-                             if marker_plane is not None else marker_warning),
-                        )
-                else:
-                    display_frame = cv2.bitwise_and(frame, frame, mask=mask)
+        if not cv2.imwrite(os.path.join(original_dir, f"frame_{timestamp}.jpg"), frame):
+            raise RuntimeError("The original camera frame could not be saved")
+        if not cv2.imwrite(
+                os.path.join(undistorted_dir, f"frame_{timestamp}.png"), frame_undist):
+            raise RuntimeError("The undistorted camera frame could not be saved")
 
-                    v_coords = cv2.findNonZero(mask)
-                    if v_coords is not None:
-                        x, y, w, h = cv2.boundingRect(v_coords)
-                        pad = 30
-                        orig_h, orig_w = display_frame.shape[:2]
+        definitions = self.crop_definitions["cameras"][str(camera_num)]
+        if len(definitions) != 2 or any(definition is None for definition in definitions):
+            raise RuntimeError(f"Camera {camera_num} requires two saved crop regions")
 
-                        x1 = max(0, x - pad)
-                        y1 = max(0, y - pad)
-                        x2 = min(orig_w, x + w + pad)
-                        y2 = min(orig_h, y + h + pad)
+        crops = []
+        for crop_index, (definition, folder) in enumerate(zip(definitions, crop_dirs), start=1):
+            crop = extract_rotated_crop(
+                frame_undist, definition, CROP_OUTPUT_SIZE, CROP_RATIO,
+            )
+            crop_path = os.path.join(folder, f"crop_{timestamp}.png")
+            if not cv2.imwrite(crop_path, crop):
+                raise RuntimeError(f"Camera {camera_num} Crop {crop_index} could not be saved")
+            crops.append(crop)
+            print(f"Camera {camera_num} Crop {crop_index} saved: {crop_path}")
 
-                        display_frame = display_frame[y1:y2, x1:x2]
-                
-        if display_frame is not None:
-            df_copy = display_frame.copy()
-            self.root.after(0, lambda f=df_copy, c=camera_num: self._display_video_frame(f, c))
+        display_frame = stack_crop_results(crops)
+        self.root.after(
+            0, lambda f=display_frame.copy(), c=camera_num: self._display_video_frame(f, c)
+        )
+        self.root.after(
+            0, self.update_progress, 100,
+            f"Camera {camera_num}: two deskewed crops prepared and saved",
+        )
 
         # Maximize the selected camera on the main thread
         self.root.after(0, lambda: self.maximize_camera(camera_num))
@@ -1387,8 +1466,7 @@ class IndustrialDashboard:
         # Simulate some processing time
         time.sleep(1)
 
-        # Print a message (replace with actual detection)
-        print(f"Detection triggered for {cam_name} (size: {self.active_size})")
+        print(f"Crop preprocessing completed for {cam_name} (size: {self.active_size})")
 
         # Restore dual view on main thread
         self.root.after(0, self.restore_dual_view)

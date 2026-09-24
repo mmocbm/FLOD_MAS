@@ -20,6 +20,15 @@ for camera in CONFIG["cameras"]:
 for key in ("max_width", "max_height", "interval_ms"):
     if CONFIG["preview"][key] <= 0:
         raise ValueError(f"Preview {key} must be positive")
+crop_setup = CONFIG.get('crop_setup', {})
+if crop_setup.get('crops_per_camera') != 2:
+    raise ValueError("Crop setup must define exactly two crops per camera")
+if crop_setup.get('aspect_ratio') != [4, 1]:
+    raise ValueError("Crop setup aspect_ratio must be [4, 1]")
+if crop_setup.get('output_size') != [2208, 552]:
+    raise ValueError("Crop setup output_size must be [2208, 552]")
+if not crop_setup.get('definitions_file'):
+    raise ValueError("Crop setup definitions_file must not be empty")
 board = CONFIG["board"]
 if not isinstance(CONFIG['capture'].get('use_dshow'), bool):
     raise ValueError("Capture use_dshow must be true or false")

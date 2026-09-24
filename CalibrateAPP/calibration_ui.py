@@ -796,7 +796,8 @@ class CalibrationApp:
 
     def manual_capture(self):
         if (self.current_frame is None or self.stage != "capture" or
-                self.processing_capture or self.processing_verification):
+                self.processing_capture or
+                getattr(self, 'processing_verification', False)):
             return
         with self.frame_lock:
             frame = self.current_frame.copy()

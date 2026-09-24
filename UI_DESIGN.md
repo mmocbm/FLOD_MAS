@@ -13,7 +13,7 @@ callbacks, and deployment requirements unchanged.
 - Button labels describe operator actions directly and use large click targets.
 - Status always uses both text and color, so color is never the only signal.
 - The same tokens and control styles are used on Dashboard, System Settings,
-  Inspection Profile, Color Mask Setup, and Camera Setup.
+  Inspection Profile, Two-Crop Setup, and Camera Setup.
 
 ## Performance
 

@@ -78,6 +78,10 @@ class Esp32SerialTests(unittest.TestCase):
         app.video_paused = False
         app._refresh_inspection_availability = MagicMock()
         app.detect_btn_L.__getitem__.return_value = tk.NORMAL
+        app.crop_definitions = {
+            'cameras': {'1': [{'saved': True}, {'saved': True}],
+                        '2': [{'saved': True}, {'saved': True}]},
+        }
 
         self.assertTrue(IndustrialDashboard.start_detect_thread(app, 'L'))
         self.assertFalse(IndustrialDashboard.start_detect_thread(app, 'R'))

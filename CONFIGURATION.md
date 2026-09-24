@@ -14,9 +14,9 @@ to this directory unless an absolute path is supplied.
 
 `rotation` sets each camera's clockwise software rotation. Allowed values are `0`,
 `90`, `180`, and `270`. Rotation is applied in the shared camera stream, so setup,
-preview, masks, calibration, and inspection all use the same orientation. A 90° or
+preview, crops, calibration, and inspection all use the same orientation. A 90° or
 270° rotation swaps the output width and height. After changing rotation, recalibrate
-that camera and recreate its saved masks; calibration from another orientation is
+that camera and recreate its saved crop regions; calibration from another orientation is
 not geometrically valid.
 
 All camera acquisition goes through the same configured capture path. The app
@@ -42,7 +42,7 @@ the saved result invalid and automatically performs a fresh search.
 Camera threads continuously retain the newest full-resolution image. Camera Setup
 borrows these streams, so switching pages does not reopen devices. The dashboard
 starts the devices in the background on first launch. Full-size photos are used
-for saving, calibration, masks and measurement. Lens correction is computed when
+for saving, calibration, crops and measurement. Lens correction is computed when
 a processing operation requests it, not on every live preview frame.
 
 ## Preview
@@ -50,8 +50,26 @@ a processing operation requests it, not on every live preview frame.
 `max_width` and `max_height` limit copies used for dashboard/setup previews;
 `interval_ms` controls preview refresh (66 ms is approximately 15 updates/second).
 Lower these for lighter display work. They do not change the camera capture size
-or the original image used for calculations. Mask editing still maps its display
+or the original image used for calculations. Crop editing still maps its display
 coordinates back to the full-resolution captured image.
+
+## Manual crop setup
+
+`crop_setup` configures the two independent model-input regions used for each
+camera. `aspect_ratio` is fixed at `[4, 1]`, and `output_size` is `[2208, 552]`, so
+deskewing and resizing use the same ratio and therefore apply one uniform scale.
+Crop definitions are stored in `Files/crop_regions.json` by default.
+
+In **Crop Setup**, select a camera and Crop 1 or Crop 2, capture an undistorted
+frame, and drag the red 4:1 region. The region can be moved by dragging inside it
+or resized from a corner. Select **Set Line** and click two points along an edge
+that should become horizontal, then save the crop. Repeat for all four regions.
+
+Inspection saves one timestamp-matched original image, undistorted image, and two
+deskewed crops under `Dataset_capture/CameraN/{Original,Undistorted,Crop1,Crop2}`.
+The two crops are prepared independently at 2208 × 552 and displayed vertically.
+Model inference is intentionally a later stage; current inspection stops after
+crop preprocessing and saving.
 
 ## Board and camera setup
 
@@ -104,33 +122,35 @@ detector automatically before requesting the second photo.
 
 ## Measurement surface mode
 
-`measurement_surface.enabled` selects how image pixels are converted to millimetres:
+`measurement_surface.enabled` selects which plane calibration is prepared for the
+later measurement stage:
 
-- `true`: Camera Setup requires the existing flat-board surface photo and inspection
-  uses its saved position.
-- `false`: Camera Setup finishes after the camera photos. Every Inspect click must
-  see the configured 4×4 ArUco marker; that frame's marker defines the measurement
-  plane and scale.
+- `true`: Camera Setup requires the existing flat-board surface photo and saves its
+  pose for later millimetre conversion.
+- `false`: Camera Setup finishes after the camera photos; the configured ArUco marker
+  remains available for a future per-inspection plane calculation.
+
+The current inspection implementation prepares and saves the two deskewed crops
+only. It does not yet run the model, calculate millimetres, or make PASS/FAIL
+decisions; those stages will be connected after crop preprocessing is validated.
 
 The default marker is `DICT_4X4_50`, ID `0`, with a 25 mm side.
 `aruco_marker_length_mm` must equal the measured outer black-square side of the
 printed marker or every result will have a scale error. The marker and product must
 be flat on the same plane, and the full marker must be visible during inspection.
 `minimum_marker_side_px` rejects markers that are too small for reliable use.
-If the marker is unavailable, inspection continues without a popup and reports only
-pixel distances. The dashboard shows a warning because millimetre results and metric
-PASS/FAIL decisions are not calculated for that frame.
 
 If you change the capture mode, lens focus, physical board, camera position or
 measurement surface, run Camera Setup again and verify real measurements. Matrix
 scaling supports resized images, but cannot compensate for a camera driver changing
-its crop or field of view. Recreate saved masks if the view changes.
+its crop or field of view. Recreate saved crop regions if the view changes.
 
 ## Other settings
 
 - `serial`: Arduino connection enabled, port and baud rate.
 - `inspection`: selectable sizes, starting size, tolerances and segment count.
-- `color_mask`: hue, saturation and brightness tolerances for selecting material.
+- `color_mask`: legacy values retained for the standalone colour-mask helper; the
+  dashboard's new crop workflow does not use them.
 
 Keep JSON syntax valid (double quotes, no trailing commas). Invalid key settings
 are rejected on startup. No extra packages are required for configuration.

@@ -42,16 +42,16 @@ def run():
             visible_inside(size_button, app.size_win)
         visible_inside(app.segments_combo, app.size_win)
 
-        app.open_mask_setup_window()
+        app.open_crop_setup_window()
         root.update()
-        assert app.mask_canvas.winfo_width() > 800
-        assert app.mask_canvas.winfo_height() > 400
-        app.mask_setup_active = False
-        app.mask_win.destroy()
+        assert app.crop_canvas.winfo_width() > 800
+        assert app.crop_canvas.winfo_height() > 400
+        app.crop_setup_active = False
+        app.crop_win.destroy()
 
         assert not errors, errors
         app.close_application()
-    print('PASS: dashboard, settings, profile, and mask layouts fit 1366x768')
+    print('PASS: dashboard, settings, profile, and crop layouts fit 1366x768')
 
 
 if __name__ == '__main__':
