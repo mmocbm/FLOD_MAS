@@ -926,21 +926,10 @@ class CalibrationApp:
                 fg=AMBER,
             )
         else:
-            try:
-                saved = json.loads(self._extrinsics_path().read_text(encoding="utf-8"))
-                thickness = saved.get("board_thickness", {})
-                if thickness.get("enabled", False):
-                    text = (
-                        "Saved product plane: bed surface, corrected by "
-                        f"{float(thickness.get('thickness_mm', 0.0)):.3f} mm"
-                    )
-                else:
-                    text = "Saved product plane: ChArUco board top (thickness disabled)"
-                self.check_plane_info.configure(text=text, fg=C["text_soft"])
-            except (OSError, ValueError, TypeError):
-                self.check_plane_info.configure(
-                    text="Saved measurement-surface metadata could not be read.", fg=AMBER,
-                )
+            self.check_plane_info.configure(
+                text="Saved measurement plane loaded and used directly.",
+                fg=C["text_soft"],
+            )
 
     def _set_check_report(self, text):
         if not hasattr(self, 'check_report') or not self.check_report.winfo_exists():
@@ -1007,12 +996,13 @@ class CalibrationApp:
             board_metrics = []
             total_points = 0
             detector_count = 2 if self.use_two_boards else 1
+            required_corners = getattr(self, 'check_minimum_corners', MIN_CORNERS)
             for board_index in range(detector_count):
                 corners, ids, _, _ = self.charuco_detectors[board_index].detectBoard(gray)
                 corner_count = len(ids) if ids is not None else 0
-                if corner_count < MIN_CORNERS:
+                if corner_count < required_corners:
                     raise ValueError(
-                        f"Board {board_index + 1}: only {corner_count}/{MIN_CORNERS} "
+                        f"Board {board_index + 1}: only {corner_count}/{required_corners} "
                         "points were found. Show the board clearly and try again."
                     )
                 rvec, tvec, metrics, object_points, image_points = estimate_planar_pose(
@@ -1061,6 +1051,7 @@ class CalibrationApp:
         self._set_check_report(
             "LENS CALIBRATION CHECK\n"
             f"Boards checked:          {board_count}\n"
+            f"Board definition:        {getattr(self, 'check_board_description', 'main configured board')}\n"
             f"Detected board points:   {corner_count}\n"
             f"Reprojection RMS:        {metrics['rms']:.3f} px\n"
             f"Mean reprojection error: {metrics['mean']:.3f} px\n"
@@ -1121,33 +1112,25 @@ class CalibrationApp:
             dist_coeffs = np.asarray(calibration["dist_coeffs"], np.float64)
             plane_rvec = np.asarray(extrinsics["rvec"], np.float64).reshape(3, 1)
             plane_tvec = np.asarray(extrinsics["tvec"], np.float64).reshape(3, 1)
-            thickness = extrinsics.get("board_thickness", {})
-            if thickness.get("enabled", False):
-                # The saved product plane is the bed. The printed verification
-                # corners are on top of a board resting on it, so move the test
-                # plane back toward the camera by the same physical thickness.
-                plane_tvec = offset_plane_tvec(
-                    plane_rvec, plane_tvec,
-                    float(thickness.get("thickness_mm", 0.0)),
-                    away_from_camera=False,
-                )
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             detections = []
             rows = []
             detector_count = 2 if self.use_two_boards else 1
+            required_corners = getattr(self, 'check_minimum_corners', MIN_CORNERS)
             for board_index in range(detector_count):
                 corners, ids, _, _ = self.charuco_detectors[board_index].detectBoard(gray)
                 corner_count = len(ids) if ids is not None else 0
-                if corner_count < MIN_CORNERS:
+                if corner_count < required_corners:
                     raise ValueError(
-                        f"Board {board_index + 1}: only {corner_count}/{MIN_CORNERS} "
+                        f"Board {board_index + 1}: only {corner_count}/{required_corners} "
                         "points were found. Show more of the board and try again."
                     )
                 board_rows = measure_board_accuracy(
                     self.boards[board_index], corners, ids,
                     camera_matrix, dist_coeffs, plane_rvec, plane_tvec,
-                    SQUARE_LENGTH_MM, board_number=board_index + 1,
+                    getattr(self, 'check_square_length_mm', SQUARE_LENGTH_MM),
+                    board_number=board_index + 1,
                 )
                 rows.extend(board_rows)
                 detections.append({
@@ -1195,15 +1178,12 @@ class CalibrationApp:
         self.processing_verification = False
         self._set_check_preview_title("●  MEASUREMENT-CHECK RESULT", PURPLE)
         self._show_check_frame(annotated)
-        thickness = extrinsics.get("board_thickness", {})
-        correction_text = (
-            f"enabled ({float(thickness.get('thickness_mm', 0.0)):.3f} mm)"
-            if thickness.get("enabled", False) else "disabled"
-        )
         report_parts = [
             "REAL-WORLD MEASUREMENT CHECK",
             f"Board mode: {'two boards' if self.use_two_boards else 'one board'}",
-            f"Board-thickness correction: {correction_text}",
+            f"Board definition: {getattr(self, 'check_board_description', 'main configured board')}",
+            "Measurement plane: saved calibration used directly",
+            "Additional checker thickness adjustment: none",
             "No PASS/FAIL limit is applied.",
             "",
             self._accuracy_metrics_text("SHORT DISTANCES", summary.get("short")),
@@ -1878,6 +1858,15 @@ class CalibrationCheckApp(CalibrationApp):
     def __init__(self, root, on_close=None, host=None, camera_provider=None,
                  on_open_setup=None):
         self.on_open_setup = on_open_setup
+        self.check_square_length_mm = SQUARE_LENGTH_MM
+        self.manual_measurement_active = False
+        self.manual_image_bgr = None
+        self.manual_image_pil = None
+        self.manual_points = []
+        self.manual_zoom = 1.0
+        self.manual_fit_scale = 1.0
+        self.manual_offset = [0.0, 0.0]
+        self.manual_pan_anchor = None
         super().__init__(
             root, on_close=on_close, host=host, camera_provider=camera_provider,
         )
@@ -1961,6 +1950,17 @@ class CalibrationCheckApp(CalibrationApp):
             highlightthickness=0,
         )
         self.video_label.place(x=0, y=0, relwidth=1, relheight=1)
+        self.manual_canvas = tk.Canvas(
+            viewport, bg=CANVAS_BG, bd=0, highlightthickness=0,
+            cursor="crosshair",
+        )
+        self.manual_canvas.bind("<Configure>", self._manual_canvas_resized)
+        self.manual_canvas.bind("<MouseWheel>", self._manual_zoom_wheel)
+        self.manual_canvas.bind("<Button-1>", self._manual_select_point)
+        self.manual_canvas.bind("<ButtonPress-2>", self._manual_pan_start)
+        self.manual_canvas.bind("<B2-Motion>", self._manual_pan_move)
+        self.manual_canvas.bind("<ButtonPress-3>", self._manual_pan_start)
+        self.manual_canvas.bind("<B3-Motion>", self._manual_pan_move)
 
         controls_shell = themed_card(workspace, bg=PANEL, width=430)
         controls_shell.grid(row=0, column=1, sticky="nsew")
@@ -2035,6 +2035,62 @@ class CalibrationCheckApp(CalibrationApp):
         self.guidance_info.pack(anchor="w", pady=(0, 8))
         self._refresh_board_mode_ui()
 
+        board_settings = tk.Frame(
+            controls, bg=C["surface_2"], highlightbackground=C["border_strong"],
+            highlightthickness=1,
+        )
+        board_settings.pack(fill=tk.X, padx=12, pady=(0, 10))
+        section_label(board_settings, "2  ChArUco board used for this check").grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(9, 5),
+        )
+        self.check_dictionary_var = tk.StringVar(value=CONFIG['board']['dictionary'])
+        self.check_squares_x_var = tk.StringVar(value=str(SQUARES_X))
+        self.check_squares_y_var = tk.StringVar(value=str(SQUARES_Y))
+        self.check_square_mm_var = tk.StringVar(value=str(SQUARE_LENGTH_MM))
+        self.check_marker_mm_var = tk.StringVar(value=str(MARKER_LENGTH_MM))
+        self.check_board1_start_var = tk.StringVar(value="0")
+        self.check_board2_start_var = tk.StringVar(
+            value=str(CONFIG['two_board']['second_board_start_id'])
+        )
+        tk.Label(
+            board_settings, text="Dictionary", bg=C["surface_2"], fg=MUTED,
+            font=(FONT, 8, "bold"),
+        ).grid(row=1, column=0, sticky="w", padx=(10, 4), pady=3)
+        dictionary_values = (
+            "DICT_4X4_50", "DICT_4X4_100", "DICT_4X4_250", "DICT_4X4_1000",
+            "DICT_5X5_50", "DICT_5X5_100", "DICT_5X5_250", "DICT_5X5_1000",
+            "DICT_6X6_50", "DICT_6X6_100", "DICT_6X6_250", "DICT_6X6_1000",
+            "DICT_7X7_50", "DICT_7X7_100", "DICT_7X7_250", "DICT_7X7_1000",
+        )
+        ttk.Combobox(
+            board_settings, textvariable=self.check_dictionary_var,
+            values=dictionary_values, state="readonly", width=18,
+        ).grid(row=1, column=1, columnspan=3, sticky="ew", padx=(4, 10), pady=3)
+
+        def setting_entry(label, variable, row, column):
+            tk.Label(
+                board_settings, text=label, bg=C["surface_2"], fg=MUTED,
+                font=(FONT, 8, "bold"),
+            ).grid(row=row, column=column, sticky="w", padx=(10 if column == 0 else 6, 3), pady=3)
+            tk.Entry(
+                board_settings, textvariable=variable, width=7, bg=TITLE_BG,
+                fg=TEXT, insertbackground=TEXT, relief=tk.FLAT,
+                justify=tk.CENTER, font=(FONT, 9),
+            ).grid(row=row, column=column + 1, sticky="ew", padx=(3, 6), pady=3)
+
+        setting_entry("Squares X", self.check_squares_x_var, 2, 0)
+        setting_entry("Squares Y", self.check_squares_y_var, 2, 2)
+        setting_entry("Square mm", self.check_square_mm_var, 3, 0)
+        setting_entry("Marker mm", self.check_marker_mm_var, 3, 2)
+        setting_entry("Board 1 ID", self.check_board1_start_var, 4, 0)
+        setting_entry("Board 2 ID", self.check_board2_start_var, 4, 2)
+        for column in range(4):
+            board_settings.columnconfigure(column, weight=1)
+        themed_button(
+            board_settings, "APPLY BOARD SETTINGS", self._apply_checker_board_settings,
+            role="secondary", pady=7,
+        ).grid(row=5, column=0, columnspan=4, sticky="ew", padx=10, pady=(7, 10))
+
         checks = tk.Frame(
             controls, bg=C["surface_2"], highlightbackground=C["border_strong"],
             highlightthickness=1,
@@ -2042,7 +2098,7 @@ class CalibrationCheckApp(CalibrationApp):
         checks.pack(fill=tk.X, padx=12, pady=(0, 10))
         self.check_panel = checks
         self.check_panel_visible = True
-        section_label(checks, "2  Run a fresh verification capture").pack(
+        section_label(checks, "3  Run a fresh verification capture").pack(
             anchor="w", padx=10, pady=(9, 3),
         )
         tk.Label(
@@ -2062,6 +2118,11 @@ class CalibrationCheckApp(CalibrationApp):
             role="purple", width=29, pady=9,
         )
         self.check_measurement_btn.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.manual_measurement_btn = themed_button(
+            checks, "MANUAL TWO-POINT MEASUREMENT", self.start_manual_measurement,
+            role="primary", width=29, pady=9,
+        )
+        self.manual_measurement_btn.pack(fill=tk.X, padx=10, pady=(0, 6))
         self.check_live_btn = themed_button(
             checks, "RESUME LIVE PREVIEW", self.resume_check_preview,
             role="secondary", width=29, pady=7,
@@ -2072,6 +2133,16 @@ class CalibrationCheckApp(CalibrationApp):
             wraplength=370, font=(FONT, 9), padx=9, pady=6,
         )
         self.check_plane_info.pack(fill=tk.X, padx=10, pady=(0, 8))
+        manual_actions = tk.Frame(checks, bg=C["surface_2"])
+        manual_actions.pack(fill=tk.X, padx=10, pady=(0, 8))
+        themed_button(
+            manual_actions, "UNDO POINT", self.undo_manual_point,
+            role="quiet", width=13, pady=6,
+        ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
+        themed_button(
+            manual_actions, "RESET POINTS", self.reset_manual_points,
+            role="quiet", width=13, pady=6,
+        ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
 
         self.check_report = scrolledtext.ScrolledText(
             controls, height=9, bg=TITLE_BG, fg=C["text_soft"],
@@ -2106,9 +2177,136 @@ class CalibrationCheckApp(CalibrationApp):
         )
         self._refresh_check_panel_buttons()
 
+    def _refresh_check_panel_buttons(self):
+        super()._refresh_check_panel_buttons()
+        if not hasattr(self, 'manual_measurement_btn'):
+            return
+        ready = (
+            self.camera_index is not None and self.camera_running
+            and self.camera_matrix is not None and self.dist_coeffs is not None
+            and self._extrinsics_path().is_file()
+            and not self.processing_verification
+        )
+        self.manual_measurement_btn.configure(
+            state=tk.NORMAL if ready else tk.DISABLED,
+        )
+
+    def _load_saved_intrinsics(self):
+        saved = super()._load_saved_intrinsics()
+        board = saved.get("board", {})
+        self.check_dictionary_var.set(
+            board.get("dictionary", self.check_dictionary_var.get())
+        )
+        self.check_squares_x_var.set(str(board.get("squares_x", SQUARES_X)))
+        self.check_squares_y_var.set(str(board.get("squares_y", SQUARES_Y)))
+        self.check_square_mm_var.set(str(board.get("square_length_mm", SQUARE_LENGTH_MM)))
+        self.check_marker_mm_var.set(str(board.get("marker_length_mm", MARKER_LENGTH_MM)))
+        self.check_board1_start_var.set("0")
+        two_board = saved.get("two_board", {})
+        board_1_ids = two_board.get("board_1_marker_ids", [])
+        board_2_ids = two_board.get("board_2_marker_ids", [])
+        if board_1_ids:
+            self.check_board1_start_var.set(str(min(map(int, board_1_ids))))
+        if board_2_ids:
+            self.check_board2_start_var.set(str(min(map(int, board_2_ids))))
+        self._apply_checker_board_settings(announce=False)
+        return saved
+
+    def _apply_checker_board_settings(self, announce=True):
+        """Build session-only ChArUco boards from the checker controls."""
+        if self.processing_verification:
+            if announce:
+                self._set_status("Wait for the current check to finish", AMBER)
+            return False
+        try:
+            dictionary_name = self.check_dictionary_var.get().strip()
+            dictionary_code = getattr(cv2.aruco, dictionary_name)
+            dictionary = cv2.aruco.getPredefinedDictionary(dictionary_code)
+            squares_x = int(self.check_squares_x_var.get())
+            squares_y = int(self.check_squares_y_var.get())
+            square_mm = float(self.check_square_mm_var.get())
+            marker_mm = float(self.check_marker_mm_var.get())
+            board_1_start = int(self.check_board1_start_var.get())
+            board_2_start = int(self.check_board2_start_var.get())
+            if squares_x < 3 or squares_y < 3:
+                raise ValueError("Squares X and Y must both be at least 3")
+            if not np.isfinite(square_mm) or not np.isfinite(marker_mm):
+                raise ValueError("Square and marker dimensions must be finite")
+            if square_mm <= 0 or marker_mm <= 0 or marker_mm >= square_mm:
+                raise ValueError("Marker size must be positive and smaller than square size")
+            if board_1_start < 0 or board_2_start < 0:
+                raise ValueError("Board start IDs cannot be negative")
+
+            template = cv2.aruco.CharucoBoard(
+                (squares_x, squares_y), square_mm / 1000.0,
+                marker_mm / 1000.0, dictionary,
+            )
+            marker_count = int(len(template.getIds()))
+            capacity = int(dictionary.bytesList.shape[0])
+            starts = [board_1_start]
+            if self.use_two_boards:
+                starts.append(board_2_start)
+            id_sets = [
+                np.arange(start, start + marker_count, dtype=np.int32)
+                for start in starts
+            ]
+            for board_number, marker_ids in enumerate(id_sets, start=1):
+                if int(marker_ids[-1]) >= capacity:
+                    raise ValueError(
+                        f"Board {board_number} needs IDs through {int(marker_ids[-1])}, "
+                        f"but {dictionary_name} ends at {capacity - 1}"
+                    )
+            if len(id_sets) == 2 and set(id_sets[0]).intersection(map(int, id_sets[1])):
+                raise ValueError("Board 1 and Board 2 marker-ID ranges overlap")
+
+            boards = []
+            detectors = []
+            for marker_ids in id_sets:
+                board = cv2.aruco.CharucoBoard(
+                    (squares_x, squares_y), square_mm / 1000.0,
+                    marker_mm / 1000.0, dictionary, marker_ids,
+                )
+                detector = cv2.aruco.CharucoDetector(
+                    board, cv2.aruco.CharucoParameters(),
+                    cv2.aruco.DetectorParameters(),
+                )
+                boards.append(board)
+                detectors.append(detector)
+            self.boards = boards
+            self.charuco_detectors = detectors
+            self.board = boards[0]
+            self.charuco_detector = detectors[0]
+            self.check_square_length_mm = square_mm
+            self.check_board_description = (
+                f"{dictionary_name}, {squares_x}×{squares_y}, "
+                f"square {square_mm:g} mm, marker {marker_mm:g} mm"
+            )
+            self.check_minimum_corners = min(
+                MIN_CORNERS, max(4, (squares_x - 1) * (squares_y - 1))
+            )
+        except (AttributeError, TypeError, ValueError, cv2.error) as error:
+            self._set_status("Board settings were not applied", RED)
+            self._set_check_report(f"Invalid ChArUco board settings.\n\n{error}")
+            return False
+
+        self._refresh_board_mode_ui()
+        if announce:
+            ranges = [f"B{index + 1}: {ids[0]}–{ids[-1]}"
+                      for index, ids in enumerate(id_sets)]
+            message = (
+                f"Applied {dictionary_name}, {squares_x}×{squares_y}, "
+                f"square {square_mm:g} mm, marker {marker_mm:g} mm; "
+                + ", ".join(ranges)
+            )
+            self._set_status("ChArUco checker settings applied", GREEN)
+            self._set_check_report(message)
+            self.log(message)
+        return True
+
     def select_camera(self, index):
         if self.starting_camera or self.processing_verification:
             return
+        self._hide_manual_measurement()
         if self.camera_running:
             self.stop_camera()
         self.camera_index = index
@@ -2122,6 +2320,10 @@ class CalibrationCheckApp(CalibrationApp):
         self._set_status(f"Camera {index} selected — start the live feed")
         self.log(f"Selected Camera {index} for calibration checks")
         self._refresh_stage_ui()
+
+    def stop_camera(self):
+        self._hide_manual_measurement()
+        super().stop_camera()
 
     def _camera_started(self, requested_width, requested_height):
         self.starting_camera = False
@@ -2146,9 +2348,12 @@ class CalibrationCheckApp(CalibrationApp):
     def select_board_mode(self, enabled):
         if self.processing_verification:
             return
+        previous_mode = self.use_two_boards
         self.use_two_boards = bool(enabled)
-        self._init_detector()
-        self._refresh_board_mode_ui()
+        if not self._apply_checker_board_settings(announce=False):
+            self.use_two_boards = previous_mode
+            self._refresh_board_mode_ui()
+            return
         message = (
             "Two-board mode — show both separately numbered ChArUco boards"
             if self.use_two_boards else
@@ -2160,7 +2365,332 @@ class CalibrationCheckApp(CalibrationApp):
             message + ". This selection is used for both lens and measurement checks."
         )
 
+    def start_manual_measurement(self):
+        """Capture one frame and prepare an undistorted zoomable point picker."""
+        if (self.current_frame is None or self.processing_verification
+                or self.camera_index is None):
+            return
+        calibration_path = self._calibration_path()
+        extrinsics_path = self._extrinsics_path()
+        if not calibration_path.is_file() or not extrinsics_path.is_file():
+            self._set_check_report(
+                "Manual measurement requires saved lens and measurement-surface calibration."
+            )
+            return
+        with self.frame_lock:
+            frame = self.current_frame.copy()
+        self.processing_verification = True
+        self.check_preview_frozen = True
+        self._set_check_preview_title("●  PREPARING UNDISTORTED CAPTURE", AMBER)
+        self._set_status("Preparing manual measurement image…", AMBER)
+        self._refresh_stage_ui()
+        threading.Thread(
+            target=self._prepare_manual_measurement_worker,
+            args=(frame, calibration_path, extrinsics_path), daemon=True,
+        ).start()
+
+    def _prepare_manual_measurement_worker(self, frame, calibration_path, extrinsics_path):
+        try:
+            calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+            extrinsics = json.loads(extrinsics_path.read_text(encoding="utf-8"))
+            frame_size = (frame.shape[1], frame.shape[0])
+            camera_matrix = scale_camera_matrix(
+                np.asarray(calibration["camera_matrix"], dtype=np.float64),
+                tuple(calibration["image_size"]), frame_size,
+            )
+            dist_coeffs = np.asarray(calibration["dist_coeffs"], dtype=np.float64)
+            undistorted = cv2.undistort(
+                frame, camera_matrix, dist_coeffs, None, camera_matrix,
+            )
+            rvec = np.asarray(extrinsics["rvec"], dtype=np.float64).reshape(3, 1)
+            tvec = np.asarray(extrinsics["tvec"], dtype=np.float64).reshape(3, 1)
+            self.root.after(
+                0, self._manual_measurement_ready,
+                undistorted, camera_matrix, rvec, tvec,
+            )
+        except Exception as error:
+            self.root.after(0, self._manual_measurement_failed, str(error))
+
+    def _manual_measurement_ready(self, image, camera_matrix, rvec, tvec):
+        self.processing_verification = False
+        self.manual_measurement_active = True
+        self.manual_image_bgr = image
+        self.manual_image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        self.manual_camera_matrix = camera_matrix
+        self.manual_plane_rvec = rvec
+        self.manual_plane_tvec = tvec
+        self.manual_points = []
+        self.manual_distance_mm = None
+        self.video_label.place_forget()
+        self.manual_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.manual_canvas.lift()
+        self._set_check_preview_title("●  MANUAL TWO-POINT MEASUREMENT", PURPLE)
+        self._set_status("Select Point 1 and Point 2 on the saved measurement plane", GREEN)
+        self._set_check_report(
+            "MANUAL TWO-POINT MEASUREMENT\n\n"
+            "Left-click: select Point 1 and Point 2\n"
+            "Mouse wheel: zoom at cursor\n"
+            "Right-drag or middle-drag: pan\n\n"
+            "The captured image is undistorted. The saved measurement-plane "
+            "calibration is used directly; no additional thickness adjustment is applied."
+        )
+        self._refresh_stage_ui()
+        self.root.after_idle(self._reset_manual_view)
+
+    def _manual_measurement_failed(self, error):
+        self.processing_verification = False
+        self.check_preview_frozen = False
+        self.manual_measurement_active = False
+        self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
+        self._set_status("Manual measurement could not be prepared", RED)
+        self._set_check_report(f"Manual measurement failed.\n\n{error}")
+        self._refresh_stage_ui()
+
+    def _manual_canvas_resized(self, _event=None):
+        if self.manual_measurement_active:
+            self._reset_manual_view()
+
+    def _reset_manual_view(self):
+        if not self.manual_measurement_active or self.manual_image_pil is None:
+            return
+        canvas_width = max(2, self.manual_canvas.winfo_width())
+        canvas_height = max(2, self.manual_canvas.winfo_height())
+        image_width, image_height = self.manual_image_pil.size
+        self.manual_fit_scale = min(
+            canvas_width / image_width, canvas_height / image_height,
+        )
+        self.manual_zoom = 1.0
+        scale = self.manual_fit_scale
+        self.manual_offset = [
+            (canvas_width - image_width * scale) / 2.0,
+            (canvas_height - image_height * scale) / 2.0,
+        ]
+        self._render_manual_measurement()
+
+    def _manual_scale(self):
+        return max(1e-9, self.manual_fit_scale * self.manual_zoom)
+
+    def _clamp_manual_offset(self):
+        if self.manual_image_pil is None:
+            return
+        canvas_width = max(2, self.manual_canvas.winfo_width())
+        canvas_height = max(2, self.manual_canvas.winfo_height())
+        image_width, image_height = self.manual_image_pil.size
+        scale = self._manual_scale()
+        scaled_width = image_width * scale
+        scaled_height = image_height * scale
+        if scaled_width <= canvas_width:
+            self.manual_offset[0] = (canvas_width - scaled_width) / 2.0
+        else:
+            self.manual_offset[0] = min(0.0, max(canvas_width - scaled_width, self.manual_offset[0]))
+        if scaled_height <= canvas_height:
+            self.manual_offset[1] = (canvas_height - scaled_height) / 2.0
+        else:
+            self.manual_offset[1] = min(0.0, max(canvas_height - scaled_height, self.manual_offset[1]))
+
+    def _render_manual_measurement(self):
+        if not self.manual_measurement_active or self.manual_image_pil is None:
+            return
+        self._clamp_manual_offset()
+        canvas_width = max(2, self.manual_canvas.winfo_width())
+        canvas_height = max(2, self.manual_canvas.winfo_height())
+        image_width, image_height = self.manual_image_pil.size
+        scale = self._manual_scale()
+        offset_x, offset_y = self.manual_offset
+        source_left = max(0, int(np.floor(-offset_x / scale)))
+        source_top = max(0, int(np.floor(-offset_y / scale)))
+        source_right = min(image_width, int(np.ceil((canvas_width - offset_x) / scale)))
+        source_bottom = min(image_height, int(np.ceil((canvas_height - offset_y) / scale)))
+        self.manual_canvas.delete("all")
+        if source_right <= source_left or source_bottom <= source_top:
+            return
+        crop = self.manual_image_pil.crop(
+            (source_left, source_top, source_right, source_bottom)
+        )
+        display_width = max(1, round((source_right - source_left) * scale))
+        display_height = max(1, round((source_bottom - source_top) * scale))
+        crop = crop.resize(
+            (display_width, display_height),
+            Image.Resampling.LANCZOS if scale < 1.0 else Image.Resampling.BILINEAR,
+        )
+        photo = ImageTk.PhotoImage(crop)
+        self.manual_canvas.image = photo
+        self.manual_canvas.create_image(
+            offset_x + source_left * scale,
+            offset_y + source_top * scale,
+            image=photo, anchor="nw",
+        )
+        canvas_points = []
+        for index, (image_x, image_y) in enumerate(self.manual_points, start=1):
+            canvas_x = offset_x + image_x * scale
+            canvas_y = offset_y + image_y * scale
+            canvas_points.append((canvas_x, canvas_y))
+            radius = 7
+            self.manual_canvas.create_oval(
+                canvas_x - radius, canvas_y - radius,
+                canvas_x + radius, canvas_y + radius,
+                outline="#FFFFFF", fill=RED if index == 1 else GREEN, width=2,
+            )
+            self.manual_canvas.create_text(
+                canvas_x + 11, canvas_y - 11, text=f"P{index}", anchor="sw",
+                fill="#FFFFFF", font=(FONT, 10, "bold"),
+            )
+        if len(canvas_points) == 2:
+            (x1, y1), (x2, y2) = canvas_points
+            self.manual_canvas.create_line(x1, y1, x2, y2, fill=AMBER, width=3)
+            if self.manual_distance_mm is not None:
+                self.manual_canvas.create_text(
+                    (x1 + x2) / 2.0, (y1 + y2) / 2.0 - 12,
+                    text=f"{self.manual_distance_mm:.3f} mm",
+                    fill="#FFFFFF", font=(FONT, 12, "bold"),
+                )
+
+    def _manual_zoom_wheel(self, event):
+        if not self.manual_measurement_active:
+            return "break"
+        old_scale = self._manual_scale()
+        image_x = (event.x - self.manual_offset[0]) / old_scale
+        image_y = (event.y - self.manual_offset[1]) / old_scale
+        factor = 1.25 if event.delta > 0 else 0.8
+        self.manual_zoom = min(20.0, max(1.0, self.manual_zoom * factor))
+        new_scale = self._manual_scale()
+        self.manual_offset = [
+            event.x - image_x * new_scale,
+            event.y - image_y * new_scale,
+        ]
+        self._render_manual_measurement()
+        return "break"
+
+    def _manual_pan_start(self, event):
+        if self.manual_measurement_active:
+            self.manual_pan_anchor = (
+                event.x, event.y, self.manual_offset[0], self.manual_offset[1],
+            )
+        return "break"
+
+    def _manual_pan_move(self, event):
+        if not self.manual_measurement_active or self.manual_pan_anchor is None:
+            return "break"
+        start_x, start_y, offset_x, offset_y = self.manual_pan_anchor
+        self.manual_offset = [
+            offset_x + event.x - start_x,
+            offset_y + event.y - start_y,
+        ]
+        self._render_manual_measurement()
+        return "break"
+
+    def _manual_select_point(self, event):
+        if not self.manual_measurement_active or self.manual_image_pil is None:
+            return "break"
+        scale = self._manual_scale()
+        image_x = (event.x - self.manual_offset[0]) / scale
+        image_y = (event.y - self.manual_offset[1]) / scale
+        image_width, image_height = self.manual_image_pil.size
+        if not (0 <= image_x < image_width and 0 <= image_y < image_height):
+            return "break"
+        if len(self.manual_points) >= 2:
+            self.manual_points = []
+            self.manual_distance_mm = None
+        self.manual_points.append((float(image_x), float(image_y)))
+        if len(self.manual_points) == 2:
+            self._calculate_manual_distance()
+        else:
+            self._set_check_report(
+                f"Point 1 selected at ({image_x:.1f}, {image_y:.1f}) px.\n\n"
+                "Zoom and pan if needed, then select Point 2."
+            )
+        self._render_manual_measurement()
+        return "break"
+
+    def _manual_pixels_to_plane_mm(self, points):
+        inverse_camera = np.linalg.inv(self.manual_camera_matrix)
+        rotation, _ = cv2.Rodrigues(self.manual_plane_rvec)
+        normal = rotation[:, 2]
+        translation = self.manual_plane_tvec.reshape(3)
+        plane_d = -float(normal.dot(translation))
+        results = []
+        for image_x, image_y in points:
+            ray = inverse_camera.dot(np.array([image_x, image_y, 1.0], dtype=np.float64))
+            denominator = float(normal.dot(ray))
+            if abs(denominator) < 1e-10:
+                raise ValueError("Selected ray is parallel to the saved measurement plane")
+            camera_point = (-plane_d / denominator) * ray
+            plane_xy = rotation[:, :2].T.dot(camera_point - translation)
+            results.append(plane_xy * 1000.0)
+        return np.asarray(results, dtype=np.float64)
+
+    def _calculate_manual_distance(self):
+        try:
+            world_points = self._manual_pixels_to_plane_mm(self.manual_points)
+            self.manual_distance_mm = float(np.linalg.norm(world_points[1] - world_points[0]))
+        except (cv2.error, np.linalg.LinAlgError, TypeError, ValueError) as error:
+            self.manual_distance_mm = None
+            self._set_check_report(f"Manual distance could not be calculated.\n\n{error}")
+            return
+        p1, p2 = self.manual_points
+        pixel_distance = float(np.linalg.norm(np.subtract(p2, p1)))
+        self._set_status(
+            f"Manual distance: {self.manual_distance_mm:.3f} mm", GREEN,
+        )
+        self._set_check_report(
+            "MANUAL TWO-POINT MEASUREMENT\n\n"
+            f"Point 1:       ({p1[0]:.2f}, {p1[1]:.2f}) px\n"
+            f"Point 2:       ({p2[0]:.2f}, {p2[1]:.2f}) px\n"
+            f"Pixel distance: {pixel_distance:.3f} px\n"
+            f"Linear distance: {self.manual_distance_mm:.3f} mm\n\n"
+            "Saved measurement-plane calibration used directly. "
+            "No additional board-thickness adjustment was applied."
+        )
+
+    def undo_manual_point(self):
+        if not self.manual_measurement_active or not self.manual_points:
+            return
+        self.manual_points.pop()
+        self.manual_distance_mm = None
+        self._set_check_report(
+            "Last point removed. Select the remaining measurement point."
+        )
+        self._render_manual_measurement()
+
+    def reset_manual_points(self):
+        if not self.manual_measurement_active:
+            return
+        self.manual_points = []
+        self.manual_distance_mm = None
+        self._set_check_report(
+            "Points cleared. Left-click Point 1 and Point 2 on the captured image."
+        )
+        self._render_manual_measurement()
+
+    def _hide_manual_measurement(self):
+        if hasattr(self, 'manual_canvas'):
+            self.manual_canvas.place_forget()
+        if hasattr(self, 'video_label'):
+            self.video_label.place(x=0, y=0, relwidth=1, relheight=1)
+        self.manual_measurement_active = False
+        self.manual_image_bgr = None
+        self.manual_image_pil = None
+        self.manual_points = []
+        self.manual_distance_mm = None
+
+    def resume_check_preview(self):
+        self._hide_manual_measurement()
+        super().resume_check_preview()
+
+    def verify_saved_calibration(self):
+        self._hide_manual_measurement()
+        super().verify_saved_calibration()
+
+    def verify_measurement_accuracy(self):
+        self._hide_manual_measurement()
+        super().verify_measurement_accuracy()
+
+    def _show_check_frame(self, frame):
+        self._hide_manual_measurement()
+        super()._show_check_frame(frame)
+
     def _close_calibration_checks(self):
+        self._hide_manual_measurement()
         self.check_preview_frozen = False
         self._set_check_preview_title("CAMERA PREVIEW", C["text_soft"])
 
