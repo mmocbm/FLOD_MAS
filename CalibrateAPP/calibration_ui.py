@@ -958,7 +958,11 @@ class CalibrationApp:
         )
         self._refresh_check_window_buttons()
         self.check_preview_frozen = False
-        self._update_check_preview()
+        # Return from the button callback before doing any full-resolution image
+        # conversion. This lets Windows paint the Toplevel instead of leaving a
+        # white client area while its first preview frame is prepared.
+        window.update_idletasks()
+        self.check_preview_job = self.root.after(50, self._update_check_preview)
 
     def _close_calibration_checks(self):
         if getattr(self, 'check_preview_job', None) is not None:
@@ -1018,8 +1022,17 @@ class CalibrationApp:
             return
         width = max(2, self.check_image_label.winfo_width())
         height = max(2, self.check_image_label.winfo_height())
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        image.thumbnail((width, height), Image.Resampling.LANCZOS)
+        frame_height, frame_width = frame.shape[:2]
+        scale = min(width / frame_width, height / frame_height)
+        display_size = (
+            max(1, round(frame_width * scale)),
+            max(1, round(frame_height * scale)),
+        )
+        resized = cv2.resize(
+            frame, display_size,
+            interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR,
+        )
+        image = Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
         canvas = Image.new("RGB", (width, height), CANVAS_BG)
         canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
         photo = ImageTk.PhotoImage(canvas)
@@ -1038,13 +1051,19 @@ class CalibrationApp:
         if window is None or not window.winfo_exists():
             return
         cycle_started = time.perf_counter()
-        if (not self.check_preview_frozen and self.camera_running
-                and self.current_frame is not None):
-            with self.frame_lock:
-                frame = self.current_frame
-            self._show_check_frame(frame)
+        try:
+            if (not self.check_preview_frozen and self.camera_running
+                    and self.current_frame is not None):
+                with self.frame_lock:
+                    frame = self.current_frame
+                self._show_check_frame(frame)
+        except (cv2.error, tk.TclError, ValueError, TypeError) as error:
+            self._set_check_report(f"Live preview could not be displayed.\n\n{error}")
         elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
-        delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
+        # The main Camera Setup preview already runs at the configured cadence.
+        # A 15 FPS secondary preview is responsive without doubling UI load.
+        target_interval_ms = max(66, CONFIG['preview']['interval_ms'])
+        delay_ms = max(1, round(target_interval_ms - elapsed_ms))
         self.check_preview_job = self.root.after(delay_ms, self._update_check_preview)
 
     def resume_check_preview(self):
