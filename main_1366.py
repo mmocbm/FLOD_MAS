@@ -752,7 +752,7 @@ class IndustrialDashboard:
                       role="purple", width=9, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
 
         self.crop_status = tk.Label(
-            content, text="Select a camera and crop, then capture an undistorted frame",
+            content, text="Live preview is raw; CAPTURE freezes and undistorts one frame",
             bg=C["surface_2"], fg=C["text_soft"], font=(FONT, 9, "bold"),
             anchor="w", padx=12, pady=7,
         )
@@ -777,7 +777,7 @@ class IndustrialDashboard:
         for number, button in self.crop_camera_buttons.items():
             set_button_role(button, "selected" if number == camera else "secondary")
         self.crop_status.configure(
-            text=f"Camera {camera} selected — capture an undistorted frame"
+            text=f"Camera {camera} selected — live preview is raw; CAPTURE applies calibration"
         )
 
     def _select_crop_index(self, crop_index):
@@ -793,9 +793,23 @@ class IndustrialDashboard:
 
     def capture_crop_frame(self):
         if self.crop_live_frame is None:
-            self._show_error_popup("No undistorted camera frame is available.")
+            self._show_error_popup("No camera frame is available.")
             return
-        self.crop_frozen_frame = self.crop_live_frame.copy()
+        camera = self.camera1 if self.crop_selected_camera == 1 else self.camera2
+        if camera is None or camera.undistorter is None:
+            self._show_error_popup(
+                f"Camera {self.crop_selected_camera} must be calibrated before crop setup."
+            )
+            return
+        # Keep the moving preview inexpensive. Lens correction is applied only
+        # once, to the exact rotation-adjusted raw frame frozen by CAPTURE.
+        try:
+            self.crop_frozen_frame = camera.undistorter.undistort(
+                self.crop_live_frame.copy()
+            )
+        except (cv2.error, ValueError, TypeError) as error:
+            self._show_error_popup(f"Could not undistort the captured frame:\n{error}")
+            return
         self.crop_frozen = True
         self.crop_edit_mode = "draw"
         self._load_selected_crop_for_edit()
@@ -1258,8 +1272,9 @@ class IndustrialDashboard:
             
             if getattr(self, "crop_setup_active", False):
                 if not self.crop_frozen:
-                    camera = self.camera1 if self.crop_selected_camera == 1 else self.camera2
-                    frame = camera.get_undistorted_frame()
+                    # CameraStream has already applied the configured rotation.
+                    # Show raw frames here; CAPTURE performs lens correction once.
+                    frame = raw1 if self.crop_selected_camera == 1 else raw2
                     if frame is not None:
                         self.crop_live_frame = frame.copy()
                         self._display_crop_setup_frame(self.crop_live_frame)
