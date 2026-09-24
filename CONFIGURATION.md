@@ -68,8 +68,51 @@ that should become horizontal, then save the crop. Repeat for all four regions.
 Inspection saves one timestamp-matched original image, undistorted image, and two
 deskewed crops under `Dataset_capture/CameraN/{Original,Undistorted,Crop1,Crop2}`.
 The two crops are prepared independently at 2208 × 552 and displayed vertically.
-Model inference is intentionally a later stage; current inspection stops after
-crop preprocessing and saving.
+The crops selected in `sam_detection.send_crops` are then sent for object
+detection, described in the next section.
+
+## SAM object detection
+
+`sam_detection` sends selected crops to the Roboflow serverless workflow
+`obhashcolab-1/sam3-with-prompts`, which runs SAM3 with a text prompt and returns
+polygons. It runs inside the inspection freeze, after the crops are saved and
+before the view is restored, so the operator sees a progress line while it works.
+
+- `enabled`: master switch. When false, inspection stops after saving crops and no
+  request is made.
+- `send_crops`: per camera, which of the two crops to upload — for example
+  `{"1": [true, false], "2": [true, false]}` sends only Crop 1 from each camera.
+  Crops are listed in `Crop1`, `Crop2` order.
+- `prompt`: one text prompt applied to every uploaded crop. Commas separate
+  multiple classes; a class name may contain spaces.
+- `jpeg_quality`: 1–100. Crops are re-encoded as JPEG at this quality before
+  upload, which shrinks the upload without changing its pixel dimensions, so
+  detection still sees full 2208 × 552 detail. Lower it to send less data, raise
+  it if fine detail is being lost.
+- `timeout_seconds`: how long to wait for one crop before abandoning the request.
+- `save_overlay` / `save_polygons`: whether to write the annotated image and the
+  JSON result beside the saved crops.
+
+Results land in `Dataset_capture/CameraN/Detected/` as `crop_<timestamp>_<n>.png`
+and `.json`. The JSON holds the prompt, workflow, upload size, image size and every
+polygon with its class, confidence, area and points, so results can be compared
+across runs.
+
+Detection is fail-soft: a missing key, network error, timeout or unusable response
+never fails the inspection. The raw crop is displayed and saved as usual, the JSON
+record is still written with its `error` field set, and the dashboard shows a
+warning instead of a PASS or FAIL. This keeps a dead API distinguishable from a
+frame in which nothing was found.
+
+The API key is never stored in `config.json`, because that file is committed. Put
+it in a `.env` file in the project root (already listed in `.gitignore`):
+
+```
+ROBOFLOW_API_KEY=your_key_here
+```
+
+An environment variable of the same name takes precedence over the file. The key
+is sent as an authorization header, never in the URL.
 
 ## Board and camera setup
 

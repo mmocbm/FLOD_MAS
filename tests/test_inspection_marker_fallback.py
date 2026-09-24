@@ -30,6 +30,7 @@ class InspectionCropPreparationTests(unittest.TestCase):
         app.maximize_camera = MagicMock()
         app.restore_dual_view = MagicMock()
         app._finish_detection = MagicMock()
+        app.set_pass_fail = MagicMock()
         first = normalized_definition(
             (225, 100), 300, 0, [(100, 100), (350, 100)], (450, 300),
         )
@@ -40,7 +41,11 @@ class InspectionCropPreparationTests(unittest.TestCase):
             'version': 1, 'cameras': {'1': [first, second], '2': [None, None]},
         }
 
-        app._simulate_detection('L')
+        # SAM detection is switched off so this test stays about crop
+        # preparation: it must not reach the network, and an overlay write
+        # would change the imwrite count asserted below.
+        with patch.dict(main.CONFIG['sam_detection'], {'enabled': False}):
+            app._simulate_detection('L')
 
         self.assertEqual(imwrite.call_count, 4)
         app._display_video_frame.assert_called_once()

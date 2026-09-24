@@ -93,6 +93,30 @@ for key in ('aruco_marker_length_mm', 'minimum_marker_side_px',
         raise ValueError(f"Measurement surface {key} must be positive")
 if CONFIG['inspection']['default_size'] not in CONFIG['inspection']['sizes']:
     raise ValueError("Default size must be in the configured size list")
+sam = CONFIG.get('sam_detection', {})
+if not isinstance(sam.get('enabled'), bool):
+    raise ValueError("SAM detection enabled must be true or false")
+send_crops = sam.get('send_crops')
+if not isinstance(send_crops, dict) or set(send_crops) != {"1", "2"}:
+    raise ValueError("SAM detection send_crops must define cameras '1' and '2'")
+for camera in ("1", "2"):
+    flags = send_crops[camera]
+    if (not isinstance(flags, list) or len(flags) != 2
+            or not all(isinstance(flag, bool) for flag in flags)):
+        raise ValueError(
+            f"SAM detection send_crops['{camera}'] must be two true/false values"
+        )
+if sam.get('enabled'):
+    if not isinstance(sam.get('prompt'), str) or not sam['prompt'].strip():
+        raise ValueError("SAM detection prompt must not be empty")
+    quality = sam.get('jpeg_quality')
+    if isinstance(quality, bool) or not isinstance(quality, int) or not 1 <= quality <= 100:
+        raise ValueError("SAM detection jpeg_quality must be an integer from 1 to 100")
+    if not isinstance(sam.get('timeout_seconds'), (int, float)) or sam['timeout_seconds'] <= 0:
+        raise ValueError("SAM detection timeout_seconds must be positive")
+    for key in ('save_overlay', 'save_polygons'):
+        if not isinstance(sam.get(key), bool):
+            raise ValueError(f"SAM detection {key} must be true or false")
 
 
 def camera_config(index):

@@ -9,13 +9,21 @@
 # separately installable PyPI package. Pip installs transitive dependencies
 # (such as Keras, h5py, joblib and ImageIO) automatically from the pins below.
 
-# Numerical arrays and image processing
-numpy==2.5.3
-opencv-python==5.0.0.93
+# Numerical arrays and image processing.
+# These two are held back by inference-sdk, which requires numpy<2.4 and
+# opencv-python<=4.13.0. OpenCV 4.12 in turn requires numpy<2.3, so 2.2.6 is the
+# newest numpy the set resolves with. Do not raise either pin without first
+# confirming inference-sdk accepts it, or the install becomes unsatisfiable.
+numpy==2.2.6
+opencv-python==4.12.0.88
 Pillow==12.3.0
 
 # Camera/Arduino serial communication
 pyserial==3.5
+
+# SAM3 object detection over the Roboflow serverless workflow (sam_detection.py).
+# Pulls in supervision, aiohttp, matplotlib and av.
+inference-sdk==1.7.1
 
 # Geometry, morphology, skeleton and measurement algorithms
 scipy==1.18.1

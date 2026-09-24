@@ -17,5 +17,14 @@
   "measurement_surface": {"enabled": true, "aruco_dictionary": "DICT_4X4_100", "aruco_marker_id": 0, "aruco_marker_length_mm": 25.0, "minimum_marker_side_px": 30.0, "maximum_reprojection_error_px": 2.0, "board_thickness": {"enabled": false, "thickness_mm": 2.0}},
   "serial": {"enabled": true, "port": "COM22", "baud_rate": 9600},
   "inspection": {"sizes": ["L", "M", "S", "XL", "XS"], "default_size": "M", "length_tolerance": "± 1mm", "width_tolerance": "± 1mm", "segments": 3},
+  "sam_detection": {
+    "enabled": true,
+    "send_crops": {"1": [true, false], "2": [true, false]},
+    "prompt": "A narrow continuous adhesive strip following the curved fabric boundary.",
+    "jpeg_quality": 75,
+    "timeout_seconds": 30,
+    "save_overlay": true,
+    "save_polygons": true
+  },
   "color_mask": {"hue_range": 10, "saturation_range": 80, "value_range": 80}
 }

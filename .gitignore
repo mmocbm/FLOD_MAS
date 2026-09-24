@@ -28,6 +28,9 @@ Desktop.ini
 # Runtime logs
 *.log
 
+# Secrets
+.env
+
 # Generated camera/calibration output
 Dataset_Capture/
 Dataset_capture/

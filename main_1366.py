@@ -14,6 +14,7 @@ import sys
 import math
 from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
+import sam_detection
 from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
 from crop_processing import (
     definition_fits_image, extract_rotated_crop,
@@ -1488,7 +1489,10 @@ class IndustrialDashboard:
             crops.append(crop)
             print(f"Camera {camera_num} Crop {crop_index} saved: {crop_path}")
 
-        display_frame = stack_crop_results(crops)
+        display_crops, detection_warnings = self._detect_crops(
+            camera_num, timestamp, crops,
+        )
+        display_frame = stack_crop_results(display_crops)
         self.root.after(
             0, lambda f=display_frame.copy(), c=camera_num: self._display_video_frame(f, c)
         )
@@ -1516,16 +1520,87 @@ class IndustrialDashboard:
 
         self.root.after(0, highlight)
 
-        # Simulate some processing time
-        time.sleep(1)
-
         print(f"Crop preprocessing completed for {cam_name} (size: {self.active_size})")
 
         # Restore dual view on main thread
         self.root.after(0, self.restore_dual_view)
 
-        # Re-enable buttons and resume video on main thread
-        self.root.after(0, self._finish_detection)
+        # Re-enable buttons and resume video on main thread. Detection warnings
+        # are applied afterwards because _finish_detection resets the status
+        # card and progress text back to LIVE.
+        def finish():
+            self._finish_detection()
+            if detection_warnings:
+                self.set_pass_fail("WARNING")
+                self.update_progress(100, " | ".join(detection_warnings))
+
+        self.root.after(0, finish)
+
+    def _detect_crops(self, camera_num, timestamp, crops):
+        """Run SAM detection on the configured crops; return what to display.
+
+        Returns the crop images to stack (annotated where detection ran) and a
+        list of warning strings. This never raises: a failed call leaves the raw
+        crop in place and is reported instead, so a network problem can never
+        lose an inspection.
+        """
+        settings = CONFIG['sam_detection']
+        selected = settings['send_crops'][str(camera_num)]
+        if not settings['enabled'] or not any(selected):
+            return crops, []
+
+        prompt = settings['prompt']
+        quality = settings['jpeg_quality']
+        timeout = settings['timeout_seconds']
+        detected_dir = os.path.join("Dataset_capture", f"Camera{camera_num}", "Detected")
+        os.makedirs(detected_dir, exist_ok=True)
+        self.root.after(0, self.update_progress, 100,
+                        f"Camera {camera_num}: detecting objects…")
+
+        display = list(crops)
+        warnings = []
+        for crop_index, crop in enumerate(crops, start=1):
+            if not selected[crop_index - 1]:
+                continue
+            image_size = (crop.shape[1], crop.shape[0])
+            detection = sam_detection.detect_crop(
+                crop, prompt, jpeg_quality=quality, timeout_seconds=timeout,
+            )
+            print(f"Camera {camera_num} Crop {crop_index}: "
+                  f"{len(detection.polygons)} polygon(s) from "
+                  f"{detection.upload_bytes} byte upload")
+
+            overlay_saved = False
+            if detection.polygons and settings['save_overlay']:
+                annotated = sam_detection.draw_polygons(crop, detection.polygons)
+                overlay_path = os.path.join(
+                    detected_dir, f"crop_{timestamp}_{crop_index}.png")
+                if cv2.imwrite(overlay_path, annotated):
+                    overlay_saved = True
+                    display[crop_index - 1] = annotated
+                else:
+                    warnings.append(
+                        f"Crop {crop_index}: the overlay image could not be saved")
+
+            if settings['save_polygons']:
+                record = sam_detection.detection_record(
+                    camera_num, crop_index, timestamp, self.active_size, prompt,
+                    image_size, detection, quality, overlay_saved,
+                )
+                record_path = os.path.join(
+                    detected_dir, f"crop_{timestamp}_{crop_index}.json")
+                try:
+                    with open(record_path, "w", encoding="utf-8") as stream:
+                        json.dump(record, stream, indent=2)
+                        stream.write("\n")
+                except OSError as error:
+                    warnings.append(
+                        f"Crop {crop_index}: the result file could not be saved ({error})")
+
+            if detection.error:
+                warnings.append(f"Crop {crop_index}: {detection.error}")
+
+        return display, warnings
 
     def _finish_detection(self, completed=True):
         self.video_paused = False
