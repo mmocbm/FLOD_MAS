@@ -112,8 +112,7 @@ class CalibrationApp:
         self.coverage_counts = np.zeros((COVERAGE_ROWS, COVERAGE_COLUMNS), dtype=np.int32)
         self.processing_capture = False
         self.processing_verification = False
-        self.check_window = None
-        self.check_preview_job = None
+        self.check_panel_visible = False
         self.check_preview_frozen = False
         thickness_config = CONFIG['measurement_surface'].get('board_thickness', {})
         self.board_thickness_enabled_var = tk.BooleanVar(
@@ -231,8 +230,11 @@ class CalibrationApp:
         preview_header = tk.Frame(preview_card, bg=C["surface"])
         preview_header.pack(fill=tk.X, padx=14, pady=10)
         status_dot(preview_header).pack(side=tk.LEFT, padx=(0, 7))
-        tk.Label(preview_header, text="CAMERA PREVIEW", bg=C["surface"], fg=C["text_soft"],
-                 font=(FONT, 9, "bold")).pack(side=tk.LEFT)
+        self.preview_title = tk.Label(
+            preview_header, text="CAMERA PREVIEW", bg=C["surface"],
+            fg=C["text_soft"], font=(FONT, 9, "bold"),
+        )
+        self.preview_title.pack(side=tk.LEFT)
         self.resolution_label = tk.Label(
             preview_header, text="No camera connected", bg=C["surface"], fg=MUTED,
             font=(FONT, 9),
@@ -354,14 +356,50 @@ class CalibrationApp:
                  font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
         tk.Label(
             verify_box,
-            text="Open one window for lens-calibration and real-world measurement checks.",
+            text="Check lens calibration and real-world measurement accuracy here.",
             bg=C["surface_2"], fg=MUTED, wraplength=360, justify=tk.LEFT, font=(FONT, 9),
         ).pack(anchor="w", padx=10, pady=(0, 7))
         self.verify_btn = self._button(
-            verify_box, "OPEN CALIBRATION CHECKS", self.open_calibration_checks,
+            verify_box, "SHOW CALIBRATION CHECKS", self.open_calibration_checks,
             PURPLE, 29, tk.DISABLED,
         )
         self.verify_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        self.check_panel = tk.Frame(verify_box, bg=C["surface_2"])
+        tk.Label(
+            self.check_panel,
+            text=("Use a fresh board position. In two-board mode, show both numbered "
+                  "boards and keep them flat."),
+            bg=C["surface_2"], fg=MUTED, wraplength=350, justify=tk.LEFT,
+            font=(FONT, 9),
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+        self.check_lens_btn = themed_button(
+            self.check_panel, "CHECK LENS CALIBRATION",
+            self.verify_saved_calibration, role="blue", width=29, pady=9,
+        )
+        self.check_lens_btn.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.check_measurement_btn = themed_button(
+            self.check_panel, "CHECK MEASUREMENT ACCURACY",
+            self.verify_measurement_accuracy, role="purple", width=29, pady=9,
+        )
+        self.check_measurement_btn.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.check_live_btn = themed_button(
+            self.check_panel, "RESUME LIVE PREVIEW", self.resume_check_preview,
+            role="secondary", width=29, pady=8,
+        )
+        self.check_live_btn.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.check_plane_info = tk.Label(
+            self.check_panel, text="", bg=TITLE_BG, fg=C["text_soft"],
+            justify=tk.LEFT, wraplength=350, font=(FONT, 9), padx=9, pady=7,
+        )
+        self.check_plane_info.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.check_report = scrolledtext.ScrolledText(
+            self.check_panel, height=13, bg=TITLE_BG, fg=C["text_soft"],
+            insertbackground=TEXT, font=(MONO_FONT, 9), wrap=tk.WORD,
+            relief=tk.FLAT,
+        )
+        self.check_report.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.check_report.configure(state=tk.DISABLED)
 
         plane_box = tk.Frame(controls, bg=C["surface_2"], highlightbackground=C["border_strong"], highlightthickness=1)
         plane_box.pack(fill=tk.X, padx=12, pady=(0, 10))
@@ -541,7 +579,7 @@ class CalibrationApp:
             state=(tk.NORMAL if SURFACE_SETUP_ENABLED and self.camera_running
                    and self.stage == "extrinsic_ready" else tk.DISABLED)
         )
-        self._refresh_check_window_buttons()
+        self._refresh_check_panel_buttons()
 
     def _calibration_path(self, camera_index=None):
         index = self.camera_index if camera_index is None else camera_index
@@ -689,7 +727,8 @@ class CalibrationApp:
                                              max(1, int(frame.shape[0] * scale))))
                 self._draw_coverage_guide(display)
                 self._draw_capture_history(display)
-                self._show_frame(display)
+                if not (self.check_panel_visible and self.check_preview_frozen):
+                    self._show_frame(display)
         elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
         delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
         self.preview_job = self.root.after(delay_ms, self.update_frame)
@@ -856,131 +895,59 @@ class CalibrationApp:
         ).start()
 
     def open_calibration_checks(self):
-        """Open the combined lens and metric-measurement verification window."""
+        """Expand the calibration checker inside the Camera Setup controls."""
         if self.camera_index is None or not self.camera_running:
-            messagebox.showwarning("Camera required", "Select and start a camera first.")
+            self._set_status("Select and start a camera before opening calibration checks", AMBER)
             return
-        if self.check_window is not None and self.check_window.winfo_exists():
-            self.check_window.lift()
+        if self.check_panel_visible:
+            self._close_calibration_checks()
             return
 
-        window = tk.Toplevel(self.root)
-        self.check_window = window
-        window.title(f"Camera {self.camera_index} Calibration Checks")
-        window.geometry(self._centered_geometry(1120, 700))
-        window.minsize(900, 600)
-        window.configure(bg=BG)
-        window.transient(self.root)
-        window.protocol("WM_DELETE_WINDOW", self._close_calibration_checks)
-
-        header = tk.Frame(window, bg=TITLE_BG, height=TITLE_BAR_HEIGHT)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        tk.Label(header, text="CALIBRATION CHECKS", bg=TITLE_BG, fg=TEXT,
-                 font=(FONT, 12, "bold")).pack(side=tk.LEFT, padx=16, pady=10)
-        tk.Label(
-            header,
-            text=("TWO-BOARD MODE" if self.use_two_boards else "ONE-BOARD MODE"),
-            bg=TITLE_BG, fg=PURPLE, font=(FONT, 9, "bold"),
-        ).pack(side=tk.LEFT, padx=8)
-        themed_button(header, "CLOSE", self._close_calibration_checks,
-                      role="quiet", width=8).pack(side=tk.RIGHT, padx=10, pady=6)
-
-        body = tk.Frame(window, bg=BG)
-        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
-        body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
-        body.rowconfigure(0, weight=1)
-
-        preview = themed_card(body, bg=CANVAS_BG)
-        preview.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        self.check_preview_title = tk.Label(
-            preview, text="●  LIVE CAMERA PREVIEW",
-            bg=C["surface"], fg=GREEN, anchor="w",
-            font=(FONT, 9, "bold"), padx=10, pady=8,
-        )
-        self.check_preview_title.pack(fill=tk.X)
-        self.check_image_label = tk.Label(
-            preview, text="Run a check to capture and analyse the current frame",
-            bg=CANVAS_BG, fg=MUTED, font=(FONT, 12),
-        )
-        self.check_image_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-
-        controls = themed_card(body, bg=PANEL)
-        controls.grid(row=0, column=1, sticky="nsew")
-        tk.Label(controls, text="Fresh verification capture", bg=PANEL, fg=TEXT,
-                 font=(FONT, 16, "bold")).pack(anchor="w", padx=14, pady=(14, 3))
-        tk.Label(
-            controls,
-            text=("Move the board to a different place on the saved surface. "
-                  "In two-board mode, show both numbered boards. Keep every board flat."),
-            bg=PANEL, fg=MUTED, justify=tk.LEFT, wraplength=380, font=(FONT, 9),
-        ).pack(anchor="w", padx=14, pady=(0, 10))
-
-        self.check_lens_btn = themed_button(
-            controls, "CHECK LENS CALIBRATION", self.verify_saved_calibration,
-            role="blue", width=29, pady=10,
-        )
-        self.check_lens_btn.pack(fill=tk.X, padx=14, pady=(0, 7))
-        self.check_measurement_btn = themed_button(
-            controls, "CHECK MEASUREMENT ACCURACY", self.verify_measurement_accuracy,
-            role="purple", width=29, pady=10,
-        )
-        self.check_measurement_btn.pack(fill=tk.X, padx=14, pady=(0, 10))
-        self.check_live_btn = themed_button(
-            controls, "RESUME LIVE PREVIEW", self.resume_check_preview,
-            role="secondary", width=29, pady=8,
-        )
-        self.check_live_btn.pack(fill=tk.X, padx=14, pady=(0, 10))
-
-        thickness = CONFIG['measurement_surface'].get('board_thickness', {})
-        thickness_state = ("enabled" if self.board_thickness_enabled_var.get()
-                           else "disabled")
-        self.check_plane_info = tk.Label(
-            controls,
-            text=(f"Board-thickness correction: {thickness_state} "
-                  f"({thickness.get('thickness_mm', 2.0):g} mm configured)"),
-            bg=C["surface_2"], fg=C["text_soft"], justify=tk.LEFT,
-            wraplength=380, font=(FONT, 9), padx=10, pady=8,
-        )
-        self.check_plane_info.pack(fill=tk.X, padx=14, pady=(0, 10))
-
-        self.check_report = scrolledtext.ScrolledText(
-            controls, bg=TITLE_BG, fg=C["text_soft"], insertbackground=TEXT,
-            font=(MONO_FONT, 9), wrap=tk.WORD, relief=tk.FLAT, height=18,
-        )
-        self.check_report.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
+        self.check_panel.pack(fill=tk.X, after=self.verify_btn)
+        self.check_panel_visible = True
+        self.check_preview_frozen = False
+        self.verify_btn.configure(text="HIDE CALIBRATION CHECKS")
+        self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
         self._set_check_report(
             "Lens check reports reprojection error in pixels.\n\n"
             "Measurement check uses the saved surface calibration and reports "
             "known ChArUco distances, short/long errors, RMSE and maximum error. "
             "No PASS/FAIL limit is applied."
         )
-        self._refresh_check_window_buttons()
-        self.check_preview_frozen = False
-        # Return from the button callback before doing any full-resolution image
-        # conversion. This lets Windows paint the Toplevel instead of leaving a
-        # white client area while its first preview frame is prepared.
-        window.update_idletasks()
-        self.check_preview_job = self.root.after(50, self._update_check_preview)
+        self._refresh_check_panel_buttons()
+        self.root.after_idle(self._scroll_to_check_panel)
+
+    def _scroll_to_check_panel(self):
+        """Bring the expanded embedded checker into view in the settings panel."""
+        if not self.check_panel_visible:
+            return
+        self.controls_canvas.update_idletasks()
+        bounds = self.controls_canvas.bbox("all")
+        if bounds and bounds[3] > 0:
+            fraction = max(0.0, min(1.0, self.check_panel.winfo_y() / bounds[3]))
+            self.controls_canvas.yview_moveto(fraction)
 
     def _close_calibration_checks(self):
-        if getattr(self, 'check_preview_job', None) is not None:
-            try:
-                self.root.after_cancel(self.check_preview_job)
-            except (tk.TclError, ValueError):
-                pass
-            self.check_preview_job = None
-        window = getattr(self, 'check_window', None)
-        if window is not None and window.winfo_exists():
-            window.destroy()
-        self.check_window = None
+        if hasattr(self, 'check_panel'):
+            self.check_panel.pack_forget()
+        self.check_panel_visible = False
+        self.check_preview_frozen = False
+        if hasattr(self, 'verify_btn'):
+            self.verify_btn.configure(text="SHOW CALIBRATION CHECKS")
+        self._set_check_preview_title("CAMERA PREVIEW", C["text_soft"])
 
-    def _refresh_check_window_buttons(self):
-        window = getattr(self, 'check_window', None)
-        if window is None or not window.winfo_exists():
+    def _refresh_check_panel_buttons(self):
+        if not hasattr(self, 'check_panel'):
             return
         busy = bool(self.processing_capture or self.processing_verification)
+        if self.camera_index is None:
+            self.check_lens_btn.configure(state=tk.DISABLED)
+            self.check_measurement_btn.configure(state=tk.DISABLED)
+            self.check_live_btn.configure(state=tk.DISABLED)
+            self.check_plane_info.configure(
+                text="Select and start a camera to use calibration checks.", fg=MUTED,
+            )
+            return
         lens_ready = self.camera_running and self._calibration_path().is_file() and not busy
         metric_ready = lens_ready and self._extrinsics_path().is_file()
         self.check_lens_btn.configure(state=tk.NORMAL if lens_ready else tk.DISABLED)
@@ -1017,54 +984,14 @@ class CalibrationApp:
         self.check_report.configure(state=tk.DISABLED)
 
     def _show_check_frame(self, frame):
-        if not hasattr(self, 'check_image_label') or not self.check_image_label.winfo_exists():
-            self._show_frame(frame)
-            return
-        width = max(2, self.check_image_label.winfo_width())
-        height = max(2, self.check_image_label.winfo_height())
-        frame_height, frame_width = frame.shape[:2]
-        scale = min(width / frame_width, height / frame_height)
-        display_size = (
-            max(1, round(frame_width * scale)),
-            max(1, round(frame_height * scale)),
-        )
-        resized = cv2.resize(
-            frame, display_size,
-            interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR,
-        )
-        image = Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
-        canvas = Image.new("RGB", (width, height), CANVAS_BG)
-        canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
-        photo = ImageTk.PhotoImage(canvas)
-        self.check_image_label.image = photo
-        self.check_image_label.configure(image=photo, text="")
+        # Check results use the existing Camera Setup preview; there is no
+        # second preview widget or camera stream.
+        self._show_frame(frame)
 
     def _set_check_preview_title(self, text, color):
-        title = getattr(self, 'check_preview_title', None)
+        title = getattr(self, 'preview_title', None)
         if title is not None and title.winfo_exists():
             title.configure(text=text, fg=color)
-
-    def _update_check_preview(self):
-        """Display the latest camera snapshot without opening another device stream."""
-        self.check_preview_job = None
-        window = getattr(self, 'check_window', None)
-        if window is None or not window.winfo_exists():
-            return
-        cycle_started = time.perf_counter()
-        try:
-            if (not self.check_preview_frozen and self.camera_running
-                    and self.current_frame is not None):
-                with self.frame_lock:
-                    frame = self.current_frame
-                self._show_check_frame(frame)
-        except (cv2.error, tk.TclError, ValueError, TypeError) as error:
-            self._set_check_report(f"Live preview could not be displayed.\n\n{error}")
-        elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
-        # The main Camera Setup preview already runs at the configured cadence.
-        # A 15 FPS secondary preview is responsive without doubling UI load.
-        target_interval_ms = max(66, CONFIG['preview']['interval_ms'])
-        delay_ms = max(1, round(target_interval_ms - elapsed_ms))
-        self.check_preview_job = self.root.after(delay_ms, self._update_check_preview)
 
     def resume_check_preview(self):
         """Return from a frozen result image to the current live camera view."""
@@ -1175,15 +1102,6 @@ class CalibrationApp:
             "to validate millimetre distances on the saved plane."
         )
         self._refresh_stage_ui()
-        messagebox.showinfo(
-            "Calibration check",
-            f"{result}\n\nReprojection RMS: {metrics['rms']:.2f} px\n"
-            f"Required: {MAX_VERIFICATION_RMS_PX:.2f} px or below\n"
-            f"Board points checked: {corner_count}\n\n"
-            + ("The saved calibration is suitable for this camera state."
-               if is_ok else
-               "Focus, lens, camera position, resolution, or the board setup may have changed. Run calibration again."),
-        )
 
     def _verification_failed(self, error):
         self.processing_verification = False
@@ -1193,7 +1111,6 @@ class CalibrationApp:
         self.log(f"Calibration check failed: {error}")
         self._set_check_report(f"Lens calibration check failed.\n\n{error}")
         self._refresh_stage_ui()
-        messagebox.showwarning("Calibration check", error)
 
     def verify_measurement_accuracy(self):
         """Measure known ChArUco spans through the saved fixed-plane calibration."""
@@ -1363,7 +1280,6 @@ class CalibrationApp:
         self._set_status("Measurement accuracy could not be checked", RED)
         self.log(f"Measurement accuracy check failed: {error}")
         self._refresh_stage_ui()
-        messagebox.showwarning("Measurement accuracy check", error)
 
     def _detect_capture_worker(self, frame, file_path):
         """Save, reload and detect one pressed capture away from Tk's UI thread."""
