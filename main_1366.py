@@ -14,7 +14,7 @@ import sys
 import math
 from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
-from CalibrateAPP.calibration_ui import CalibrationApp
+from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
 from crop_processing import (
     definition_fits_image, extract_rotated_crop,
     load_crop_store, normalized_definition, pixel_definition,
@@ -418,31 +418,63 @@ class IndustrialDashboard:
         ).pack(anchor="w", padx=24, pady=(8, 30))
         themed_button(camera_card, "OPEN CAMERA SETUP  →", self.open_camera_setup,
                       role="blue").pack(anchor="w", padx=24, pady=(0, 24))
+        themed_button(
+            camera_card, "OPEN CALIBRATION CHECK  →", self.open_calibration_checks_page,
+            role="purple",
+        ).pack(anchor="w", padx=24, pady=(0, 24))
 
     def open_camera_setup(self):
         """Show setup inside the existing dashboard window and event loop."""
-        if getattr(self, 'calibration_page', None) is not None:
-            return
-        self.video_streaming = False
-        if getattr(self, '_video_job', None) is not None:
-            self.root.after_cancel(self._video_job)
-            self._video_job = None
-        # Keep the streams open; setup borrows the same full-resolution devices.
-        if hasattr(self, 'sel_win') and self.sel_win.winfo_exists():
-            self.sel_win.destroy()
-        self.title_bar.pack_forget()
-        self.main_frame.pack_forget()
+        self._open_camera_tool("setup")
+
+    def open_calibration_checks_page(self):
+        """Show the dedicated live calibration-verification page."""
+        self._open_camera_tool("checks")
+
+    def _open_camera_tool(self, page):
+        existing_app = getattr(self, 'calibration_app', None)
+        if existing_app is not None:
+            if getattr(self, '_camera_tool_page', None) == page:
+                return
+            if not existing_app.shutdown():
+                return
+            if getattr(self, 'calibration_page', None) is not None:
+                self.calibration_page.destroy()
+            self.calibration_page = None
+            self.calibration_app = None
+        else:
+            self.video_streaming = False
+            if getattr(self, '_video_job', None) is not None:
+                self.root.after_cancel(self._video_job)
+                self._video_job = None
+            # Keep the streams open; both pages borrow the same full-resolution devices.
+            if hasattr(self, 'sel_win') and self.sel_win.winfo_exists():
+                self.sel_win.destroy()
+            self.title_bar.pack_forget()
+            self.main_frame.pack_forget()
+
+        self._camera_tool_page = page
         self.calibration_page = tk.Frame(self.root, bg=C["bg"])
         self.calibration_page.pack(fill=tk.BOTH, expand=True)
         self.root.deiconify()
         try:
-            self.calibration_app = CalibrationApp(
-                self.root, host=self.calibration_page, on_close=self.close_camera_setup,
-                camera_provider=self._setup_camera_stream,
-            )
+            if page == "checks":
+                self.calibration_app = CalibrationCheckApp(
+                    self.root, host=self.calibration_page,
+                    on_close=self.close_camera_setup,
+                    on_open_setup=self.open_camera_setup,
+                    camera_provider=self._setup_camera_stream,
+                )
+            else:
+                self.calibration_app = CalibrationApp(
+                    self.root, host=self.calibration_page,
+                    on_close=self.close_camera_setup,
+                    on_open_checks=self.open_calibration_checks_page,
+                    camera_provider=self._setup_camera_stream,
+                )
         except Exception as e:
             self.close_camera_setup()
-            self._show_error_popup(f"Could not open camera setup:\n{e}")
+            self._show_error_popup(f"Could not open camera tool:\n{e}")
 
     def close_camera_setup(self):
         """Return immediately; keep devices open and reload saved calibration."""
@@ -450,6 +482,7 @@ class IndustrialDashboard:
             self.calibration_page.destroy()
         self.calibration_page = None
         self.calibration_app = None
+        self._camera_tool_page = None
         self.title_bar.pack(side=tk.TOP, fill=tk.X)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         if self.camera1: self.camera1.reload_calibration()
