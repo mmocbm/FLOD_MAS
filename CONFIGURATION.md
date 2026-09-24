@@ -98,6 +98,10 @@ before the view is restored, so the operator sees a progress line while it works
 - `strip_segments`: how many equal-length segments to cut the strip into. Ten by
   default. More segments give finer resolution along the strip and shorter spans
   to average over, so the per-segment figures get noisier.
+- `measure_in_mm`: whether to report the strip in millimetres. When true, the
+  overlay labels widths in mm to two decimals and the JSON gains `_mm` figures
+  beside the pixel ones. When false, or when the calibration needed for it is
+  missing, everything stays in pixels. See below.
 
 ### Strip measurement
 
@@ -108,23 +112,51 @@ and cut into `strip_segments` equal-length pieces. Width is measured across the
 strip perpendicular to that centreline, not along an image axis, so it stays
 correct where the strip curves.
 
-Every figure is in **source-image pixels**, measured on the 2208 × 552 crop.
-Converting to millimetres needs a pixels-per-millimetre factor for the crop, which
-is not yet applied.
+#### Millimetres
 
-Two limits are worth knowing. The centreline is trimmed by half a strip width at
+With `measure_in_mm` on, the crop is mapped onto the **calibrated measurement
+plane** — the plane the calibration board sat on — using that camera's intrinsics
+and extrinsics. Each crop pixel picks out a ray, and the ray crosses that plane at
+one point, so a pixel becomes a real position on the plane. The crop warp and the
+plane intersection are both projective, so they compose into a single homography,
+built by probing the tested intersection at the crop's four corners.
+
+Widths and lengths are then recomputed from mapped points rather than scaled by a
+single factor, because a pixel is **not** a fixed number of millimetres across a
+projected crop. The `mm_per_pixel` figure is a summary at the crop centre, not a
+constant.
+
+The overlay then shows `3: 3.10mm`. The JSON keeps the pixel figures alongside the
+millimetre ones: they are what the scale was applied to, so they make a
+millimetre value auditable and let it be recomputed if a calibration changes.
+
+This measures the plane, so it is only valid for a strip lying **on** that plane.
+A strip standing proud of it, a moved camera, or a re-aimed camera all invalidate
+the answer. Crops whose region the board never covered are extrapolated from the
+plane and should be treated with more caution than ones the board sat in.
+
+Millimetres are only produced when that camera's calibration and extrinsics files
+both exist and are readable. Otherwise the run falls back to pixels and records
+the reason as a warning, so a missing calibration degrades the units rather than
+losing the inspection.
+
+Three limits are worth knowing. The centreline is trimmed by half a strip width at
 each end, because a skeleton sprouts short forks at a flat strip end; the reported
-length is therefore slightly shorter than the physical strip. And because segment
+length is therefore slightly shorter than the physical strip. Because segment
 boundaries land on whole centreline samples, segment lengths can differ from each
-other by one sample's worth of arc length.
+other by one sample's worth of arc length. And widths read about 0.3 px long per
+edge, from rasterising the polygon to a whole-pixel mask — that is a fraction of a
+percent on a wide strip but several percent on one only a few pixels across.
 
 Results land in `Dataset_capture/CameraN/Detected/` as `crop_<timestamp>_<n>.png`
 and `.json`. The JSON holds the prompt, workflow, upload size, image size and every
 polygon with its class, confidence, area and points, so results can be compared
 across runs. When a strip was measured, a `strip` block is added alongside: which
-polygon it came from, the total length and the average, minimum and maximum width,
-and then one entry per segment with its own length, widths, sample count and
-midpoint. It is `null` when nothing measurable was found.
+polygon it came from, whether it is metric, the total length and the average,
+minimum and maximum width, and then one entry per segment with its own length,
+widths, sample count and midpoint. Each of those carries both a pixel figure and a
+`_mm` one; the `_mm` fields are `null` unless a millimetre scale was applied. The
+whole block is `null` when nothing measurable was found.
 
 Detection is fail-soft: a missing key, network error, timeout or unusable response
 never fails the inspection. The raw crop is displayed and saved as usual, the JSON

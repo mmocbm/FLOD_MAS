@@ -14,6 +14,7 @@ import sys
 import math
 from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
+import plane_scale
 import sam_detection
 from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
 from crop_processing import (
@@ -93,6 +94,9 @@ class IndustrialDashboard:
         # Two persistent, independently deskewed crop regions per camera.
         self.crop_definitions = load_crop_store(CROP_DEFINITIONS_FILE)
         self.crop_setup_active = False
+        # Millimetre scale per (camera, crop). It depends only on the saved
+        # region and the calibration files, so it is built once and reused.
+        self.strip_scales = {}
 
         # --- maximized camera mode ---
         self.maximized_camera = None  # None, 1, or 2
@@ -1490,7 +1494,7 @@ class IndustrialDashboard:
             print(f"Camera {camera_num} Crop {crop_index} saved: {crop_path}")
 
         display_crops, detection_warnings = self._detect_crops(
-            camera_num, timestamp, crops,
+            camera_num, timestamp, crops, frame_undist.shape[:2][::-1],
         )
         display_frame = stack_crop_results(display_crops)
         self.root.after(
@@ -1536,7 +1540,52 @@ class IndustrialDashboard:
 
         self.root.after(0, finish)
 
-    def _detect_crops(self, camera_num, timestamp, crops):
+    def _strip_scale(self, camera_num, crop_index, frame_size, warnings):
+        """The crop's millimetre scale, or None when it cannot be built.
+
+        Built once per crop region and reused: it depends only on the saved
+        region and the calibration files, which do not change mid-session.
+        Returns None when no scale is available, so the measurement falls back
+        to pixels and the reason is reported rather than silently dropped.
+        """
+        key = (camera_num, crop_index)
+        if key not in self.strip_scales:
+            self.strip_scales[key] = self._build_strip_scale(
+                key, frame_size, warnings,
+            )
+        return self.strip_scales[key]
+
+    def _build_strip_scale(self, key, frame_size, warnings):
+        camera_num, crop_index = key
+        if not CONFIG['sam_detection']['measure_in_mm']:
+            return None
+        size = frame_size or self._undistorted_size(camera_num)
+        if size is None:
+            warnings.append(
+                f"Crop {crop_index}: no millimetre scale (the undistorted frame "
+                "size is unknown)")
+            return None
+        try:
+            definitions = self.crop_definitions['cameras'][str(camera_num)]
+            return plane_scale.load_plane_scale(
+                camera_num, definitions[crop_index - 1], size,
+            )
+        except (plane_scale.PlaneScaleError, IndexError, KeyError) as error:
+            print(f"Camera {camera_num} Crop {crop_index}: measuring in pixels "
+                  f"({error})")
+            warnings.append(f"Crop {crop_index}: measuring in pixels ({error})")
+            return None
+
+    def _undistorted_size(self, camera_num):
+        """The size of the frame the crops are taken from."""
+        camera = self.camera1 if camera_num == 1 else self.camera2
+        undistorter = getattr(camera, 'undistorter', None)
+        size = getattr(undistorter, 'calibration_image_size', None)
+        if not size:
+            return None
+        return (int(size[0]), int(size[1]))
+
+    def _detect_crops(self, camera_num, timestamp, crops, frame_size=None):
         """Run SAM detection on the configured crops; return what to display.
 
         Returns the crop images to stack (annotated where detection ran) and a
@@ -1574,12 +1623,16 @@ class IndustrialDashboard:
             if detection.polygons and settings['analyze_strip']:
                 measurement = sam_detection.analyze_detection(
                     detection.polygons, crop.shape, settings['strip_segments'],
+                    self._strip_scale(camera_num, crop_index, frame_size, warnings),
                 )
             if measurement is not None:
                 summary = measurement.analysis
-                print(f"Camera {camera_num} Crop {crop_index}: strip "
-                      f"{summary.total_length_px:.0f}px long, "
-                      f"{summary.average_width_px:.1f}px average width over "
+                length = (f"{summary.total_length_mm:.2f}mm"
+                          if summary.metric else f"{summary.total_length_px:.0f}px")
+                width = (f"{summary.average_width_mm:.2f}mm"
+                         if summary.metric else f"{summary.average_width_px:.1f}px")
+                print(f"Camera {camera_num} Crop {crop_index}: strip {length} long, "
+                      f"{width} average width over "
                       f"{len(summary.segments)} segment(s)")
 
             overlay_saved = False

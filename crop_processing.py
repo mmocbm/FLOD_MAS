@@ -115,14 +115,14 @@ def definition_fits_image(definition, image_size, ratio=4.0):
     )
 
 
-def extract_rotated_crop(image, definition, output_size=(2208, 552), ratio=4.0):
-    """Deskew and extract one saved region at a fixed, ratio-matched size."""
-    if image is None or image.size == 0:
-        raise ValueError("An undistorted image is required")
-    image_size = (image.shape[1], image.shape[0])
+def rotated_crop_transform(definition, image_size, output_size=(2208, 552), ratio=4.0):
+    """The perspective transform mapping source-frame pixels to the crop.
+
+    Exposed separately from :func:`extract_rotated_crop` because anything that
+    needs to relate a measurement back to the source frame -- a millimetre
+    scale, for instance -- has to use exactly this transform, not a copy of it.
+    """
     source = definition_corners(definition, image_size, ratio).astype(np.float32)
-    if not definition_fits_image(definition, image_size, ratio):
-        raise ValueError("Saved crop extends outside the current camera image")
     output_width, output_height = map(int, output_size)
     # Pixel-boundary coordinates preserve the exact 4:1 scale in a 2208x552
     # raster; using width-1/height-1 would introduce a small anisotropic scale.
@@ -130,7 +130,18 @@ def extract_rotated_crop(image, definition, output_size=(2208, 552), ratio=4.0):
         [-0.5, -0.5], [output_width - 0.5, -0.5],
         [output_width - 0.5, output_height - 0.5], [-0.5, output_height - 0.5],
     ], dtype=np.float32)
-    transform = cv2.getPerspectiveTransform(source, destination)
+    return cv2.getPerspectiveTransform(source, destination)
+
+
+def extract_rotated_crop(image, definition, output_size=(2208, 552), ratio=4.0):
+    """Deskew and extract one saved region at a fixed, ratio-matched size."""
+    if image is None or image.size == 0:
+        raise ValueError("An undistorted image is required")
+    image_size = (image.shape[1], image.shape[0])
+    if not definition_fits_image(definition, image_size, ratio):
+        raise ValueError("Saved crop extends outside the current camera image")
+    output_width, output_height = map(int, output_size)
+    transform = rotated_crop_transform(definition, image_size, output_size, ratio)
     return cv2.warpPerspective(
         image, transform, (output_width, output_height),
         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,

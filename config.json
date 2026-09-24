@@ -26,7 +26,8 @@
     "save_overlay": true,
     "save_polygons": true,
     "analyze_strip": true,
-    "strip_segments": 10
+    "strip_segments": 10,
+    "measure_in_mm": true
   },
   "color_mask": {"hue_range": 10, "saturation_range": 80, "value_range": 80}
 }

@@ -213,6 +213,139 @@ class StripRecordTests(unittest.TestCase):
         self.assertIn('total_length_px', record['strip'])
 
 
+class _DoublingScale:
+    """A stand-in millimetre scale: doubles every coordinate.
+
+    Linear, so the true answer is arithmetic rather than another projection, and
+    deliberately *not* uniform in effect -- a doubling of coordinates doubles
+    every distance, whereas a real projective scale would not, which is what the
+    separate plane-scale tests cover.
+    """
+
+    def to_mm(self, points):
+        return np.asarray(points, dtype=np.float64) * 2.0
+
+
+class MetricTests(unittest.TestCase):
+    def ring(self):
+        return np.int32(make_ribbon(*curved_curve(), half_width=9.0)[0])
+
+    def analysis(self):
+        return sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())], CAMERA_FRAME, 10)
+
+    def metric_analysis(self):
+        return sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale()).analysis
+
+    def test_a_scale_turns_the_measurement_metric(self):
+        pixels = self.analysis()
+        self.assertFalse(pixels.analysis.metric)
+
+        metric = sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale())
+
+        self.assertTrue(metric.analysis.metric)
+        # The pixel total is the arc of the smoothed path; the millimetre one is
+        # the arc of the path that was actually mapped, so the two differ by the
+        # resampling's own chord shortening -- a thousandth of a percent here.
+        self.assertAlmostEqual(
+            metric.analysis.total_length_mm, 2.0 * metric.analysis.total_length_px,
+            delta=0.001 * metric.analysis.total_length_px)
+        self.assertAlmostEqual(
+            metric.analysis.average_width_mm,
+            2.0 * metric.analysis.average_width_px, places=6)
+
+    def test_each_segment_keeps_its_pixel_figures(self):
+        pixels = self.analysis().analysis
+        metric = sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale()).analysis
+
+        self.assertEqual(len(metric.segments), len(pixels.segments))
+        for before, after in zip(pixels.segments, metric.segments):
+            self.assertAlmostEqual(
+                after.average_width_mm, 2.0 * before.average_width_px, places=6)
+            # Proportional to the same total the pixel figure uses, so the two
+            # agree to the total's own rounding rather than exactly.
+            self.assertAlmostEqual(
+                after.length_mm, 2.0 * before.length_px, delta=0.001 * before.length_px)
+            # The pixel figures survive the conversion unchanged.
+            self.assertAlmostEqual(
+                after.average_width_px, before.average_width_px, places=9)
+            self.assertAlmostEqual(after.length_px, before.length_px, places=9)
+
+    def test_summary_widths_span_the_segments(self):
+        metric = sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale()).analysis
+
+        # The summary spans the per-sample extremes the segments saw, so it
+        # brackets the per-segment averages rather than equalling their min/max.
+        averages = [s.average_width_mm for s in metric.segments]
+        self.assertAlmostEqual(
+            metric.minimum_width_mm,
+            min(s.minimum_width_mm for s in metric.segments), places=6)
+        self.assertAlmostEqual(
+            metric.maximum_width_mm,
+            max(s.maximum_width_mm for s in metric.segments), places=6)
+        self.assertLessEqual(metric.minimum_width_mm, min(averages))
+        self.assertGreaterEqual(metric.maximum_width_mm, max(averages))
+
+    def test_a_missing_scale_leaves_the_measurement_in_pixels(self):
+        analysis = self.analysis().analysis
+
+        self.assertFalse(analysis.metric)
+        self.assertIsNone(analysis.total_length_mm)
+        self.assertIsNone(analysis.average_width_mm)
+        self.assertIsNone(analysis.minimum_width_mm)
+        self.assertIsNone(analysis.maximum_width_mm)
+        for segment in analysis.segments:
+            self.assertIsNone(segment.length_mm)
+            self.assertIsNone(segment.average_width_mm)
+
+    def test_metric_labels_read_in_millimetres_to_two_decimals(self):
+        metric = sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale()).analysis
+
+        for segment in metric.segments:
+            text = strip_analysis._label_text(segment)
+            self.assertRegex(text, r'^\d+: \d+\.\d\dmm$')
+
+    def test_pixel_labels_are_still_used_without_a_scale(self):
+        for segment in self.analysis().analysis.segments:
+            self.assertRegex(strip_analysis._label_text(segment), r'^\d+: [\d.]+px$')
+
+    def test_metric_record_carries_both_units(self):
+        metric = sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale())
+        record = sam_detection.strip_record(metric)
+
+        self.assertTrue(record['metric'])
+        for key in ('total_length_mm', 'average_width_mm',
+                    'minimum_width_mm', 'maximum_width_mm'):
+            self.assertIsNotNone(record[key])
+            self.assertIsNotNone(record[key.replace('_mm', '_px')])
+        for segment in record['segments']:
+            self.assertIsNotNone(segment['average_width_mm'])
+            self.assertIsNotNone(segment['average_width_px'])
+
+    def test_pixel_record_leaves_the_millimetre_fields_null(self):
+        record = sam_detection.strip_record(self.analysis())
+
+        self.assertFalse(record['metric'])
+        self.assertIsNone(record['total_length_mm'])
+        self.assertIsNone(record['average_width_mm'])
+        for segment in record['segments']:
+            self.assertIsNone(segment['average_width_mm'])
+            self.assertIsNone(segment['length_mm'])
+            self.assertIsNotNone(segment['average_width_px'])
+
+
 class DrawAnalysisTests(unittest.TestCase):
     def test_draw_analysis_survives_a_missing_measurement(self):
         crop = np.zeros((552, 2208, 3), np.uint8)

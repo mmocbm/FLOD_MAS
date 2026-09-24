@@ -4,7 +4,10 @@ These tests never touch the API: sam_detection.detect_crop is always replaced,
 so the suite stays offline and gives the same result whether or not a .env with
 a real key is present.
 """
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
 import numpy as np
@@ -21,6 +24,12 @@ def make_app():
     # Run marshalled callbacks immediately so the worker path is synchronous.
     app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
     app.update_progress = MagicMock()
+    # No camera objects and no saved regions: the millimetre scale cannot be
+    # built here, which is why the tests that measure a strip turn it off.
+    app.strip_scales = {}
+    app.crop_definitions = {'cameras': {'1': [], '2': []}}
+    app.camera1 = None
+    app.camera2 = None
     return app
 
 
@@ -69,7 +78,8 @@ class DetectCropsTests(unittest.TestCase):
             [sam_detection.Polygon('strip', 0.9, ring())], 1234,
         )
         with patch.dict(main.CONFIG['sam_detection'],
-                        {'enabled': True, 'send_crops': ONLY_CROP_1}), \
+                        {'enabled': True, 'send_crops': ONLY_CROP_1,
+                         'measure_in_mm': False}), \
                 patch.object(sam_detection, 'detect_crop', return_value=detection), \
                 patch.object(main.os, 'makedirs'), \
                 patch.object(main.cv2, 'imwrite', return_value=True) as imwrite, \
@@ -99,7 +109,8 @@ class DetectCropsTests(unittest.TestCase):
         )
         with patch.dict(main.CONFIG['sam_detection'],
                         {'enabled': True, 'send_crops': ONLY_CROP_1,
-                         'analyze_strip': True, 'strip_segments': 10}), \
+                         'analyze_strip': True, 'strip_segments': 10,
+                         'measure_in_mm': False}), \
                 patch.object(sam_detection, 'detect_crop', return_value=detection), \
                 patch.object(main.os, 'makedirs'), \
                 patch.object(main.cv2, 'imwrite', return_value=True), \
@@ -152,6 +163,93 @@ class DetectCropsTests(unittest.TestCase):
         self.assertIn('Connection refused', warnings[0])
         # the record is still written, so a dead API is distinguishable
         self.assertEqual(dump.call_args[0][0]['error'], 'Connection refused')
+
+
+class StripScaleTests(unittest.TestCase):
+    """The millimetre scale is built once per crop, and its absence is reported.
+
+    A missing scale must downgrade the units, never lose the measurement, so
+    every way it can fail ends in ``None`` plus a warning the operator can read.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def definition(self):
+        return {
+            'center_normalized': [0.4931506849, 0.2508561644],
+            'width_normalized': 0.7762557078,
+            'angle_degrees': 2.3760552180,
+            'line_normalized': [[0.2283105023, 0.2859589041],
+                                [0.7785388128, 0.3030821918]],
+        }
+
+    def app_with_scale(self):
+        """An app whose crop 1 can actually be scaled into millimetres."""
+        # Named as the config names them: the lookup resolves by basename.
+        matrix = [[6812.9, 0.0, 1949.6], [0.0, 6812.9, 2243.1], [0.0, 0.0, 1.0]]
+        (self.root / 'camera_calibration_0.json').write_text(json.dumps(
+            {'camera_matrix': matrix, 'dist_coeffs': [0.0] * 5,
+             'image_size': [3456, 4608]}), encoding='utf-8')
+        (self.root / 'camera_extrinsics_0.json').write_text(json.dumps(
+            {'rvec': [0.62, 0.05, 0.03], 'tvec': [0.04, -0.31, 1.10]}),
+            encoding='utf-8')
+
+        app = make_app()
+        app.crop_definitions = {'cameras': {'1': [self.definition()]}}
+        return app
+
+    def test_measuring_in_pixels_needs_no_scale(self):
+        app = make_app()
+        warnings = []
+
+        with patch.dict(main.CONFIG['sam_detection'], {'measure_in_mm': False}):
+            scale = app._strip_scale(1, 1, (3456, 4608), warnings)
+
+        self.assertIsNone(scale)
+        self.assertEqual(warnings, [])
+
+    def test_an_unknown_frame_size_is_reported_not_guessed(self):
+        app = make_app()
+        warnings = []
+
+        with patch.dict(main.CONFIG['sam_detection'], {'measure_in_mm': True}):
+            scale = app._strip_scale(1, 1, None, warnings)
+
+        self.assertIsNone(scale)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('millimetre', warnings[0])
+
+    def test_missing_calibration_files_fall_back_to_pixels_with_a_reason(self):
+        app = make_app()
+        app.crop_definitions = {'cameras': {'1': [self.definition()]}}
+        warnings = []
+
+        with patch.dict(main.CONFIG['sam_detection'], {'measure_in_mm': True}), \
+                patch('app_config.project_path',
+                      lambda path: str(self.root / Path(path).name)):
+            scale = app._strip_scale(1, 1, (3456, 4608), warnings)
+
+        self.assertIsNone(scale)          # the measurement is not lost
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('pixels', warnings[0])
+
+    def test_a_usable_calibration_yields_a_scale_that_is_then_cached(self):
+        app = self.app_with_scale()
+        warnings = []
+
+        with patch.dict(main.CONFIG['sam_detection'], {'measure_in_mm': True}), \
+                patch('app_config.project_path',
+                      lambda path: str(self.root / Path(path).name)):
+            first = app._strip_scale(1, 1, (3456, 4608), warnings)
+            second = app._strip_scale(1, 1, (3456, 4608), warnings)
+
+        self.assertIsNotNone(first)
+        self.assertGreater(first.mm_per_pixel, 0.0)
+        self.assertIs(second, first)      # built once, reused
+        self.assertEqual(warnings, [])
 
 
 if __name__ == '__main__':

@@ -14,7 +14,7 @@ nothing in here is expressed in any other unit.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -56,6 +56,13 @@ class Segment:
     normal: tuple[float, float]    # unit vector across the strip at the midpoint
     start: tuple[float, float]
     end: tuple[float, float]
+    first_sample: int = 0          # centreline index range this segment covers
+    last_sample: int = 0
+    # Filled in by to_metric; None until a millimetre scale is applied.
+    length_mm: float | None = None
+    average_width_mm: float | None = None
+    minimum_width_mm: float | None = None
+    maximum_width_mm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,8 @@ class StripAnalysis:
     edge_indices: list[int]        # centreline index where each segment starts
     total_length_px: float
     average_width_px: float
+    total_length_mm: float | None = None
+    average_width_mm: float | None = None
 
     @property
     def minimum_width_px(self) -> float:
@@ -77,6 +86,69 @@ class StripAnalysis:
     @property
     def maximum_width_px(self) -> float:
         return max(s.maximum_width_px for s in self.segments)
+
+    @property
+    def metric(self) -> bool:
+        """Whether a millimetre scale has been applied."""
+        return self.total_length_mm is not None
+
+    @property
+    def minimum_width_mm(self) -> float | None:
+        if not self.metric:
+            return None
+        return min(s.minimum_width_mm for s in self.segments)
+
+    @property
+    def maximum_width_mm(self) -> float | None:
+        if not self.metric:
+            return None
+        return max(s.maximum_width_mm for s in self.segments)
+
+
+def to_metric(analysis: StripAnalysis, scale) -> StripAnalysis:
+    """Restate an analysis in millimetres, keeping the pixel figures.
+
+    Distances are recomputed from mapped points rather than scaled by a single
+    factor, because the crop is a projection: a pixel is not a fixed number of
+    millimetres across the whole image. Each width in particular is measured
+    between its own two edge points after mapping, so it stays the width across
+    the strip in the plane and not merely in the image.
+    """
+    centerline_mm = scale.to_mm(analysis.centerline)
+    arc = np.concatenate((
+        [0.0],
+        np.cumsum(np.linalg.norm(np.diff(centerline_mm, axis=0), axis=1)),
+    ))
+
+    half = (analysis.widths / 2.0)[:, None]
+    left_mm = scale.to_mm(analysis.centerline - analysis.normals * half)
+    right_mm = scale.to_mm(analysis.centerline + analysis.normals * half)
+    widths_mm = np.linalg.norm(right_mm - left_mm, axis=1)
+
+    total_length_mm = float(arc[-1])
+    segments = []
+    for segment in analysis.segments:
+        low, high = segment.first_sample, segment.last_sample
+        chunk = widths_mm[low:high]
+        segments.append(replace(
+            segment,
+            # Split proportionally, exactly as the pixel figure does. Measuring
+            # the arc from the first sample to the last would leave a one-sample
+            # gap at every boundary, so the segments would no longer add up to
+            # the total -- and the centreline is evenly resampled, so the
+            # proportional share is already the arc length.
+            length_mm=float(total_length_mm * (high - low) / len(analysis.centerline)),
+            average_width_mm=float(chunk.mean()),
+            minimum_width_mm=float(chunk.min()),
+            maximum_width_mm=float(chunk.max()),
+        ))
+
+    return replace(
+        analysis,
+        segments=segments,
+        total_length_mm=total_length_mm,
+        average_width_mm=float(widths_mm.mean()),
+    )
 
 
 # --- centreline --------------------------------------------------------------
@@ -287,6 +359,8 @@ def analyze_ring(ring: np.ndarray, image_shape: tuple[int, ...],
             normal=(float(normals[middle, 0]), float(normals[middle, 1])),
             start=(float(centerline[low, 0]), float(centerline[low, 1])),
             end=(float(centerline[high - 1, 0]), float(centerline[high - 1, 1])),
+            first_sample=low,
+            last_sample=high,
         ))
 
     if not segments:
@@ -337,6 +411,9 @@ def _place_label(segment: Segment, shape: tuple[int, ...]) -> tuple[int, int, in
 
 
 def _label_text(segment: Segment) -> str:
+    """The width shown beside a segment: millimetres when known, else pixels."""
+    if segment.average_width_mm is not None:
+        return f"{segment.index}: {segment.average_width_mm:.2f}mm"
     return f"{segment.index}: {segment.average_width_px:.1f}px"
 
 

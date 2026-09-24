@@ -24,6 +24,7 @@ from typing import Any, Callable, Sequence
 import cv2
 import numpy as np
 
+import plane_scale
 import strip_analysis
 
 try:
@@ -361,6 +362,7 @@ def analyze_detection(
     polygons: Sequence[Polygon],
     image_shape: Sequence[int],
     segment_count: int = 10,
+    scale: "plane_scale.PlaneScale | None" = None,
 ) -> StripMeasurement | None:
     """Measure the adhesive strip traced by the largest polygon.
 
@@ -368,6 +370,9 @@ def analyze_detection(
     biggest of them; anything smaller is treated as a stray match. Returns
     ``None`` when there is nothing measurable, including when the geometry is
     degenerate -- a measurement is never allowed to fail an inspection.
+
+    ``scale`` restates the result in millimetres; without it the measurement
+    stays in crop pixels.
     """
     if not polygons or segment_count < 1:
         return None
@@ -377,6 +382,8 @@ def analyze_detection(
         analysis = strip_analysis.analyze_ring(
             polygons[index].ring, image_shape, segment_count
         )
+        if analysis is not None and scale is not None:
+            analysis = strip_analysis.to_metric(analysis, scale)
     except Exception:  # noqa: BLE001 - reported as "no measurement", not an error
         return None
     if analysis is None:
@@ -396,24 +403,43 @@ def draw_analysis(
     return canvas
 
 
+def _rounded(value: float | None) -> float | None:
+    """Round a possibly-absent measurement, keeping absence as ``null``."""
+    return None if value is None else round(float(value), 4)
+
+
 def strip_record(measurement: StripMeasurement | None) -> dict[str, Any] | None:
-    """Serialise a strip measurement for the result JSON, or ``None``."""
+    """Serialise a strip measurement for the result JSON, or ``None``.
+
+    Pixel figures are kept alongside the millimetre ones: they are the
+    measurement the scale was applied to, so they make a millimetre value
+    auditable and let it be recomputed if the scale turns out to be wrong.
+    """
     if measurement is None:
         return None
     analysis = measurement.analysis
     return {
         "polygon_index": int(measurement.polygon_index),
-        "total_length_px": round(float(analysis.total_length_px), 3),
-        "average_width_px": round(float(analysis.average_width_px), 3),
-        "minimum_width_px": round(float(analysis.minimum_width_px), 3),
-        "maximum_width_px": round(float(analysis.maximum_width_px), 3),
+        "metric": analysis.metric,
+        "total_length_px": _rounded(analysis.total_length_px),
+        "average_width_px": _rounded(analysis.average_width_px),
+        "minimum_width_px": _rounded(analysis.minimum_width_px),
+        "maximum_width_px": _rounded(analysis.maximum_width_px),
+        "total_length_mm": _rounded(analysis.total_length_mm),
+        "average_width_mm": _rounded(analysis.average_width_mm),
+        "minimum_width_mm": _rounded(analysis.minimum_width_mm),
+        "maximum_width_mm": _rounded(analysis.maximum_width_mm),
         "segments": [
             {
                 "index": int(segment.index),
-                "length_px": round(float(segment.length_px), 3),
-                "average_width_px": round(float(segment.average_width_px), 3),
-                "minimum_width_px": round(float(segment.minimum_width_px), 3),
-                "maximum_width_px": round(float(segment.maximum_width_px), 3),
+                "length_px": _rounded(segment.length_px),
+                "average_width_px": _rounded(segment.average_width_px),
+                "minimum_width_px": _rounded(segment.minimum_width_px),
+                "maximum_width_px": _rounded(segment.maximum_width_px),
+                "length_mm": _rounded(segment.length_mm),
+                "average_width_mm": _rounded(segment.average_width_mm),
+                "minimum_width_mm": _rounded(segment.minimum_width_mm),
+                "maximum_width_mm": _rounded(segment.maximum_width_mm),
                 "samples": int(segment.samples),
                 "midpoint": {
                     "x": round(float(segment.midpoint[0]), 3),
