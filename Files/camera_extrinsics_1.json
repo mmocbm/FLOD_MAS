@@ -1,0 +1,41 @@
+{
+  "rvec": [
+    -0.0010522978459108563,
+    -0.006330127584919585,
+    0.0066791226393344855
+  ],
+  "tvec": [
+    -0.2535289668986703,
+    0.06753808403406956,
+    1.0745527376807988
+  ],
+  "reference_board_tvec": [
+    -0.2535289668986703,
+    0.06753808403406956,
+    1.0745527376807988
+  ],
+  "reprojection_error": {
+    "rms": 0.4392852850780866,
+    "mean": 0.37516655361190027,
+    "max": 1.187416105067502
+  },
+  "image_size": [
+    3456,
+    4608
+  ],
+  "corner_count": 48,
+  "reference_image": "calibration_images\\extrinsic_reference_1.jpg",
+  "coordinate_system": "ChArUco board-top plane; lengths stored in metres",
+  "board_thickness": {
+    "enabled": false,
+    "thickness_mm": 2.0,
+    "measurement_plane": "top of ChArUco board"
+  },
+  "board": {
+    "squares_x": 7,
+    "squares_y": 9,
+    "square_length_mm": 28.0,
+    "marker_length_mm": 21.0,
+    "dictionary": "DICT_4X4_100"
+  }
+}

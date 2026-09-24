@@ -19,7 +19,7 @@
   "inspection": {"sizes": ["L", "M", "S", "XL", "XS"], "default_size": "M", "length_tolerance": "± 1mm", "width_tolerance": "± 1mm", "segments": 3},
   "sam_detection": {
     "enabled": true,
-    "send_crops": {"1": [true, false], "2": [true, false]},
+    "send_crops": {"1": [false, true], "2": [false, false]},
     "prompt": "A narrow continuous adhesive strip following the curved fabric boundary.",
     "jpeg_quality": 75,
     "timeout_seconds": 30,
