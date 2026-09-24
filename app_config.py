@@ -114,9 +114,12 @@ if sam.get('enabled'):
         raise ValueError("SAM detection jpeg_quality must be an integer from 1 to 100")
     if not isinstance(sam.get('timeout_seconds'), (int, float)) or sam['timeout_seconds'] <= 0:
         raise ValueError("SAM detection timeout_seconds must be positive")
-    for key in ('save_overlay', 'save_polygons'):
+    for key in ('save_overlay', 'save_polygons', 'analyze_strip'):
         if not isinstance(sam.get(key), bool):
             raise ValueError(f"SAM detection {key} must be true or false")
+    segments = sam.get('strip_segments')
+    if isinstance(segments, bool) or not isinstance(segments, int) or segments < 1:
+        raise ValueError("SAM detection strip_segments must be a positive integer")
 
 
 def camera_config(index):

@@ -24,6 +24,8 @@ from typing import Any, Callable, Sequence
 import cv2
 import numpy as np
 
+import strip_analysis
+
 try:
     from inference_sdk import InferenceHTTPClient
     from inference_sdk.http.entities import InferenceConfiguration
@@ -74,6 +76,14 @@ class CropDetection:
     @property
     def succeeded(self) -> bool:
         return self.error is None
+
+
+@dataclass(frozen=True)
+class StripMeasurement:
+    """A strip measured from one of the detected polygons."""
+
+    polygon_index: int
+    analysis: strip_analysis.StripAnalysis
 
 
 # --- prompts and credentials -------------------------------------------------
@@ -344,6 +354,77 @@ def draw_polygons(image: np.ndarray, polygons: Sequence[Polygon]) -> np.ndarray:
     return canvas
 
 
+# --- strip measurement -------------------------------------------------------
+
+
+def analyze_detection(
+    polygons: Sequence[Polygon],
+    image_shape: Sequence[int],
+    segment_count: int = 10,
+) -> StripMeasurement | None:
+    """Measure the adhesive strip traced by the largest polygon.
+
+    The workflow can return several disjoint regions, and the strip is the
+    biggest of them; anything smaller is treated as a stray match. Returns
+    ``None`` when there is nothing measurable, including when the geometry is
+    degenerate -- a measurement is never allowed to fail an inspection.
+    """
+    if not polygons or segment_count < 1:
+        return None
+
+    index = max(range(len(polygons)), key=lambda i: polygon_area(polygons[i].ring))
+    try:
+        analysis = strip_analysis.analyze_ring(
+            polygons[index].ring, image_shape, segment_count
+        )
+    except Exception:  # noqa: BLE001 - reported as "no measurement", not an error
+        return None
+    if analysis is None:
+        return None
+    return StripMeasurement(polygon_index=index, analysis=analysis)
+
+
+def draw_analysis(
+    image: np.ndarray,
+    polygons: Sequence[Polygon],
+    measurement: StripMeasurement | None,
+) -> np.ndarray:
+    """Outline the polygons and, when one was measured, draw the strip on top."""
+    canvas = draw_polygons(image, polygons)
+    if measurement is not None:
+        strip_analysis.draw_strip_analysis(canvas, measurement.analysis)
+    return canvas
+
+
+def strip_record(measurement: StripMeasurement | None) -> dict[str, Any] | None:
+    """Serialise a strip measurement for the result JSON, or ``None``."""
+    if measurement is None:
+        return None
+    analysis = measurement.analysis
+    return {
+        "polygon_index": int(measurement.polygon_index),
+        "total_length_px": round(float(analysis.total_length_px), 3),
+        "average_width_px": round(float(analysis.average_width_px), 3),
+        "minimum_width_px": round(float(analysis.minimum_width_px), 3),
+        "maximum_width_px": round(float(analysis.maximum_width_px), 3),
+        "segments": [
+            {
+                "index": int(segment.index),
+                "length_px": round(float(segment.length_px), 3),
+                "average_width_px": round(float(segment.average_width_px), 3),
+                "minimum_width_px": round(float(segment.minimum_width_px), 3),
+                "maximum_width_px": round(float(segment.maximum_width_px), 3),
+                "samples": int(segment.samples),
+                "midpoint": {
+                    "x": round(float(segment.midpoint[0]), 3),
+                    "y": round(float(segment.midpoint[1]), 3),
+                },
+            }
+            for segment in analysis.segments
+        ],
+    }
+
+
 # --- record ------------------------------------------------------------------
 
 
@@ -357,6 +438,7 @@ def detection_record(
     detection: CropDetection,
     jpeg_quality: int,
     overlay_saved: bool,
+    measurement: StripMeasurement | None = None,
 ) -> dict[str, Any]:
     """Build the JSON body written beside each detected crop.
 
@@ -388,5 +470,6 @@ def detection_record(
             }
             for polygon in detection.polygons
         ],
+        "strip": strip_record(measurement),
         "error": detection.error,
     }

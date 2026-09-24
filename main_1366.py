@@ -1570,9 +1570,22 @@ class IndustrialDashboard:
                   f"{len(detection.polygons)} polygon(s) from "
                   f"{detection.upload_bytes} byte upload")
 
+            measurement = None
+            if detection.polygons and settings['analyze_strip']:
+                measurement = sam_detection.analyze_detection(
+                    detection.polygons, crop.shape, settings['strip_segments'],
+                )
+            if measurement is not None:
+                summary = measurement.analysis
+                print(f"Camera {camera_num} Crop {crop_index}: strip "
+                      f"{summary.total_length_px:.0f}px long, "
+                      f"{summary.average_width_px:.1f}px average width over "
+                      f"{len(summary.segments)} segment(s)")
+
             overlay_saved = False
             if detection.polygons and settings['save_overlay']:
-                annotated = sam_detection.draw_polygons(crop, detection.polygons)
+                annotated = sam_detection.draw_analysis(
+                    crop, detection.polygons, measurement)
                 overlay_path = os.path.join(
                     detected_dir, f"crop_{timestamp}_{crop_index}.png")
                 if cv2.imwrite(overlay_path, annotated):
@@ -1585,7 +1598,7 @@ class IndustrialDashboard:
             if settings['save_polygons']:
                 record = sam_detection.detection_record(
                     camera_num, crop_index, timestamp, self.active_size, prompt,
-                    image_size, detection, quality, overlay_saved,
+                    image_size, detection, quality, overlay_saved, measurement,
                 )
                 record_path = os.path.join(
                     detected_dir, f"crop_{timestamp}_{crop_index}.json")

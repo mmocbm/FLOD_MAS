@@ -92,11 +92,39 @@ before the view is restored, so the operator sees a progress line while it works
 - `timeout_seconds`: how long to wait for one crop before abandoning the request.
 - `save_overlay` / `save_polygons`: whether to write the annotated image and the
   JSON result beside the saved crops.
+- `analyze_strip`: whether to measure the adhesive strip. When true, the largest
+  returned polygon is treated as the strip and a centreline, ten segment
+  boundaries and a width label per segment are drawn on the overlay.
+- `strip_segments`: how many equal-length segments to cut the strip into. Ten by
+  default. More segments give finer resolution along the strip and shorter spans
+  to average over, so the per-segment figures get noisier.
+
+### Strip measurement
+
+SAM3 returns one dense ring tracing both edges of the strip, which says nothing
+about where the strip runs or how thick it is. The ring is rasterised,
+skeletonised to its medial axis and ordered into a single path, which is smoothed
+and cut into `strip_segments` equal-length pieces. Width is measured across the
+strip perpendicular to that centreline, not along an image axis, so it stays
+correct where the strip curves.
+
+Every figure is in **source-image pixels**, measured on the 2208 × 552 crop.
+Converting to millimetres needs a pixels-per-millimetre factor for the crop, which
+is not yet applied.
+
+Two limits are worth knowing. The centreline is trimmed by half a strip width at
+each end, because a skeleton sprouts short forks at a flat strip end; the reported
+length is therefore slightly shorter than the physical strip. And because segment
+boundaries land on whole centreline samples, segment lengths can differ from each
+other by one sample's worth of arc length.
 
 Results land in `Dataset_capture/CameraN/Detected/` as `crop_<timestamp>_<n>.png`
 and `.json`. The JSON holds the prompt, workflow, upload size, image size and every
 polygon with its class, confidence, area and points, so results can be compared
-across runs.
+across runs. When a strip was measured, a `strip` block is added alongside: which
+polygon it came from, the total length and the average, minimum and maximum width,
+and then one entry per segment with its own length, widths, sample count and
+midpoint. It is `null` when nothing measurable was found.
 
 Detection is fail-soft: a missing key, network error, timeout or unusable response
 never fails the inspection. The raw crop is displayed and saved as usual, the JSON

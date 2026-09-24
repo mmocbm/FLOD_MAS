@@ -89,6 +89,50 @@ class DetectCropsTests(unittest.TestCase):
         self.assertEqual(record['upload']['bytes'], 1234)
         self.assertTrue(record['overlay_saved'])
 
+    def test_strip_is_measured_and_recorded(self):
+        app = make_app()
+        images = crops()
+        # A long thin ring stands in for the strip; only its shape matters here.
+        strip = np.array([[100, 300], [1900, 300], [1900, 330], [100, 330]], np.int32)
+        detection = sam_detection.CropDetection(
+            [sam_detection.Polygon('strip', 0.9, strip)], 1234,
+        )
+        with patch.dict(main.CONFIG['sam_detection'],
+                        {'enabled': True, 'send_crops': ONLY_CROP_1,
+                         'analyze_strip': True, 'strip_segments': 10}), \
+                patch.object(sam_detection, 'detect_crop', return_value=detection), \
+                patch.object(main.os, 'makedirs'), \
+                patch.object(main.cv2, 'imwrite', return_value=True), \
+                patch('builtins.open', mock_open()), \
+                patch.object(main.json, 'dump') as dump:
+            display, warnings = app._detect_crops(1, 'ts', images)
+
+        self.assertEqual(warnings, [])
+        record = dump.call_args[0][0]
+        self.assertEqual(len(record['strip']['segments']), 10)
+        self.assertGreater(record['strip']['total_length_px'], 1000)
+        # The measured strip is drawn onto the overlay that gets displayed.
+        self.assertIsNot(display[0], images[0])
+
+    def test_strip_is_skipped_when_disabled(self):
+        app = make_app()
+        images = crops()
+        strip = np.array([[100, 300], [1900, 300], [1900, 330], [100, 330]], np.int32)
+        detection = sam_detection.CropDetection(
+            [sam_detection.Polygon('strip', 0.9, strip)], 1234,
+        )
+        with patch.dict(main.CONFIG['sam_detection'],
+                        {'enabled': True, 'send_crops': ONLY_CROP_1,
+                         'analyze_strip': False}), \
+                patch.object(sam_detection, 'detect_crop', return_value=detection), \
+                patch.object(main.os, 'makedirs'), \
+                patch.object(main.cv2, 'imwrite', return_value=True), \
+                patch('builtins.open', mock_open()), \
+                patch.object(main.json, 'dump') as dump:
+            app._detect_crops(1, 'ts', images)
+
+        self.assertIsNone(dump.call_args[0][0]['strip'])
+
     def test_failure_warns_keeps_raw_crop_and_still_records(self):
         app = make_app()
         images = crops()
