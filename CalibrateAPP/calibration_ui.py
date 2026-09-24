@@ -113,6 +113,8 @@ class CalibrationApp:
         self.processing_capture = False
         self.processing_verification = False
         self.check_window = None
+        self.check_preview_job = None
+        self.check_preview_frozen = False
         thickness_config = CONFIG['measurement_surface'].get('board_thickness', {})
         self.board_thickness_enabled_var = tk.BooleanVar(
             value=bool(thickness_config.get('enabled', False))
@@ -892,6 +894,12 @@ class CalibrationApp:
 
         preview = themed_card(body, bg=CANVAS_BG)
         preview.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.check_preview_title = tk.Label(
+            preview, text="●  LIVE CAMERA PREVIEW",
+            bg=C["surface"], fg=GREEN, anchor="w",
+            font=(FONT, 9, "bold"), padx=10, pady=8,
+        )
+        self.check_preview_title.pack(fill=tk.X)
         self.check_image_label = tk.Label(
             preview, text="Run a check to capture and analyse the current frame",
             bg=CANVAS_BG, fg=MUTED, font=(FONT, 12),
@@ -919,6 +927,11 @@ class CalibrationApp:
             role="purple", width=29, pady=10,
         )
         self.check_measurement_btn.pack(fill=tk.X, padx=14, pady=(0, 10))
+        self.check_live_btn = themed_button(
+            controls, "RESUME LIVE PREVIEW", self.resume_check_preview,
+            role="secondary", width=29, pady=8,
+        )
+        self.check_live_btn.pack(fill=tk.X, padx=14, pady=(0, 10))
 
         thickness = CONFIG['measurement_surface'].get('board_thickness', {})
         thickness_state = ("enabled" if self.board_thickness_enabled_var.get()
@@ -944,8 +957,16 @@ class CalibrationApp:
             "No PASS/FAIL limit is applied."
         )
         self._refresh_check_window_buttons()
+        self.check_preview_frozen = False
+        self._update_check_preview()
 
     def _close_calibration_checks(self):
+        if getattr(self, 'check_preview_job', None) is not None:
+            try:
+                self.root.after_cancel(self.check_preview_job)
+            except (tk.TclError, ValueError):
+                pass
+            self.check_preview_job = None
         window = getattr(self, 'check_window', None)
         if window is not None and window.winfo_exists():
             window.destroy()
@@ -960,6 +981,7 @@ class CalibrationApp:
         metric_ready = lens_ready and self._extrinsics_path().is_file()
         self.check_lens_btn.configure(state=tk.NORMAL if lens_ready else tk.DISABLED)
         self.check_measurement_btn.configure(state=tk.NORMAL if metric_ready else tk.DISABLED)
+        self.check_live_btn.configure(state=tk.DISABLED if busy else tk.NORMAL)
         if not self._extrinsics_path().is_file():
             self.check_plane_info.configure(
                 text="Save the measurement surface before checking millimetre accuracy.",
@@ -1004,6 +1026,38 @@ class CalibrationApp:
         self.check_image_label.image = photo
         self.check_image_label.configure(image=photo, text="")
 
+    def _set_check_preview_title(self, text, color):
+        title = getattr(self, 'check_preview_title', None)
+        if title is not None and title.winfo_exists():
+            title.configure(text=text, fg=color)
+
+    def _update_check_preview(self):
+        """Display the latest camera snapshot without opening another device stream."""
+        self.check_preview_job = None
+        window = getattr(self, 'check_window', None)
+        if window is None or not window.winfo_exists():
+            return
+        cycle_started = time.perf_counter()
+        if (not self.check_preview_frozen and self.camera_running
+                and self.current_frame is not None):
+            with self.frame_lock:
+                frame = self.current_frame
+            self._show_check_frame(frame)
+        elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
+        delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
+        self.check_preview_job = self.root.after(delay_ms, self._update_check_preview)
+
+    def resume_check_preview(self):
+        """Return from a frozen result image to the current live camera view."""
+        if self.processing_verification:
+            return
+        self.check_preview_frozen = False
+        self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
+        self._set_check_report(
+            "Live preview resumed. Position the board flat and fully visible, "
+            "then run the required check."
+        )
+
     def verify_saved_calibration(self):
         """Check a fresh ChArUco capture against the saved intrinsic calibration."""
         if (self.current_frame is None or
@@ -1016,6 +1070,8 @@ class CalibrationApp:
         with self.frame_lock:
             frame = self.current_frame.copy()
         self.processing_verification = True
+        self.check_preview_frozen = True
+        self._set_check_preview_title("●  CAPTURED LENS-CHECK FRAME", AMBER)
         self._set_status("Testing the saved calibration…", AMBER)
         self._set_check_report("Checking lens calibration from a fresh frame…")
         self._refresh_stage_ui()
@@ -1080,6 +1136,7 @@ class CalibrationApp:
 
     def _verification_complete(self, annotated, metrics, corner_count, is_ok, board_count=1):
         self.processing_verification = False
+        self._set_check_preview_title("●  LENS-CHECK RESULT", PURPLE)
         self._show_check_frame(annotated)
         result = "CALIBRATION OK" if is_ok else "RECALIBRATION RECOMMENDED"
         color = GREEN if is_ok else RED
@@ -1111,6 +1168,8 @@ class CalibrationApp:
 
     def _verification_failed(self, error):
         self.processing_verification = False
+        self.check_preview_frozen = False
+        self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
         self._set_status("Calibration could not be checked — show the board clearly", RED)
         self.log(f"Calibration check failed: {error}")
         self._set_check_report(f"Lens calibration check failed.\n\n{error}")
@@ -1132,6 +1191,10 @@ class CalibrationApp:
         with self.frame_lock:
             frame = self.current_frame.copy()
         self.processing_verification = True
+        self.check_preview_frozen = True
+        self._set_check_preview_title(
+            "●  CAPTURED MEASUREMENT-CHECK FRAME", AMBER,
+        )
         self._set_status("Checking real-world ChArUco distances…", AMBER)
         self._set_check_report(
             "Detecting the board and measuring short and long distances…"
@@ -1227,6 +1290,7 @@ class CalibrationApp:
 
     def _measurement_accuracy_complete(self, annotated, rows, summary, extrinsics):
         self.processing_verification = False
+        self._set_check_preview_title("●  MEASUREMENT-CHECK RESULT", PURPLE)
         self._show_check_frame(annotated)
         thickness = extrinsics.get("board_thickness", {})
         correction_text = (
@@ -1274,6 +1338,8 @@ class CalibrationApp:
 
     def _measurement_accuracy_failed(self, error):
         self.processing_verification = False
+        self.check_preview_frozen = False
+        self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
         self._set_check_report(f"Measurement accuracy check failed.\n\n{error}")
         self._set_status("Measurement accuracy could not be checked", RED)
         self.log(f"Measurement accuracy check failed: {error}")
