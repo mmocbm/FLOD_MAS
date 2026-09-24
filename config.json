@@ -1,7 +1,7 @@
 {
   "cameras": [
-    {"index": 0, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "rotation": 0, "calibration_file": "Files/camera_calibration_0.json", "extrinsics_file": "Files/camera_extrinsics_0.json"},
-    {"index": 2, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "rotation": 0, "calibration_file": "Files/camera_calibration_1.json", "extrinsics_file": "Files/camera_extrinsics_1.json"}
+    {"index": 0, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "rotation": 270, "calibration_file": "Files/camera_calibration_0.json", "extrinsics_file": "Files/camera_extrinsics_0.json"},
+    {"index": 1, "width": 2560, "height": 1440, "fps": 30, "fourcc": "", "rotation": 270, "calibration_file": "Files/camera_calibration_1.json", "extrinsics_file": "Files/camera_extrinsics_1.json"}
   ],
   "capture": {
     "use_dshow": true, "buffer_size": 1,
@@ -9,12 +9,12 @@
     "fallback_resolutions": [[1920, 1080], [4608, 3456], [4096, 2160], [4000, 3000],  [3264, 2448], [2592, 1944], [2560, 1440], [2048, 1536], [1920, 1080], [1600, 1200], [1280, 720], [640, 480]],
     "verification_frames": 3
   },
-  "preview": {"max_width": 880, "max_height": 540, "interval_ms": 66},
+  "preview": {"max_width": 880, "max_height": 540, "interval_ms": 33},
   "crop_setup": {"definitions_file": "Files/crop_regions.json", "crops_per_camera": 2, "aspect_ratio": [4, 1], "output_size": [2208, 552]},
   "board": {"squares_x": 7, "squares_y": 9, "square_length_mm": 28.0, "marker_length_mm": 21.0, "dictionary": "DICT_4X4_100"},
   "two_board": {"enabled": false, "dictionary": "DICT_4X4_100", "second_board_start_id": 31, "mask_padding_px": 30},
   "calibration": {"photo_count": 20, "minimum_valid_photos": 10, "coverage_grid_rows": 3, "coverage_grid_columns": 3, "minimum_corners": 20, "surface_minimum_corners": 20, "camera_warning_rms_px": 1.0, "surface_maximum_rms_px": 1.5, "verification_max_rms_px": 1.0},
-  "measurement_surface": {"enabled": false, "aruco_dictionary": "DICT_4X4_100", "aruco_marker_id": 0, "aruco_marker_length_mm": 25.0, "minimum_marker_side_px": 30.0, "maximum_reprojection_error_px": 2.0},
+  "measurement_surface": {"enabled": true, "aruco_dictionary": "DICT_4X4_100", "aruco_marker_id": 0, "aruco_marker_length_mm": 25.0, "minimum_marker_side_px": 30.0, "maximum_reprojection_error_px": 2.0, "board_thickness": {"enabled": false, "thickness_mm": 2.0}},
   "serial": {"enabled": true, "port": "COM22", "baud_rate": 9600},
   "inspection": {"sizes": ["L", "M", "S", "XL", "XS"], "default_size": "M", "length_tolerance": "± 1mm", "width_tolerance": "± 1mm", "segments": 3},
   "color_mask": {"hue_range": 10, "saturation_range": 80, "value_range": 80}

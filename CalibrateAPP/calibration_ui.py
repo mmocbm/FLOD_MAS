@@ -28,10 +28,16 @@ try:
         coverage_cell, coverage_percent, estimate_planar_pose,
         next_coverage_cell, reprojection_metrics, scale_camera_matrix,
     )
+    from .measurement_accuracy import (
+        measure_board_accuracy, offset_plane_tvec, summarize_accuracy,
+    )
 except ImportError:
     from calibration_math import (
         coverage_cell, coverage_percent, estimate_planar_pose,
         next_coverage_cell, reprojection_metrics, scale_camera_matrix,
+    )
+    from measurement_accuracy import (
+        measure_board_accuracy, offset_plane_tvec, summarize_accuracy,
     )
 
 
@@ -106,6 +112,14 @@ class CalibrationApp:
         self.coverage_counts = np.zeros((COVERAGE_ROWS, COVERAGE_COLUMNS), dtype=np.int32)
         self.processing_capture = False
         self.processing_verification = False
+        self.check_window = None
+        thickness_config = CONFIG['measurement_surface'].get('board_thickness', {})
+        self.board_thickness_enabled_var = tk.BooleanVar(
+            value=bool(thickness_config.get('enabled', False))
+        )
+        self.board_thickness_mm_var = tk.StringVar(
+            value=str(thickness_config.get('thickness_mm', 2.0))
+        )
         self.is_calibrating = False
         self.stage = "select"
         self.camera_matrix = None
@@ -338,11 +352,11 @@ class CalibrationApp:
                  font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
         tk.Label(
             verify_box,
-            text="Put the ChArUco board in view, then capture one photo. The app checks its reprojection error using the saved lens calibration.",
+            text="Open one window for lens-calibration and real-world measurement checks.",
             bg=C["surface_2"], fg=MUTED, wraplength=360, justify=tk.LEFT, font=(FONT, 9),
         ).pack(anchor="w", padx=10, pady=(0, 7))
         self.verify_btn = self._button(
-            verify_box, "TEST SAVED CALIBRATION", self.verify_saved_calibration,
+            verify_box, "OPEN CALIBRATION CHECKS", self.open_calibration_checks,
             PURPLE, 29, tk.DISABLED,
         )
         self.verify_btn.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -367,6 +381,22 @@ class CalibrationApp:
             bg=C["surface_2"], fg=MUTED, wraplength=360, justify=tk.LEFT,
             font=(FONT, 9),
         ).pack(anchor="w", padx=10, pady=(3, 7))
+        thickness_row = tk.Frame(plane_box, bg=C["surface_2"])
+        thickness_row.pack(fill=tk.X, padx=10, pady=(0, 7))
+        tk.Checkbutton(
+            thickness_row, text="Correct board thickness to bed plane",
+            variable=self.board_thickness_enabled_var,
+            bg=C["surface_2"], fg=C["text_soft"], activebackground=C["surface_2"],
+            activeforeground=TEXT, selectcolor=TITLE_BG, font=(FONT, 9),
+            bd=0, highlightthickness=0,
+        ).pack(side=tk.LEFT)
+        tk.Entry(
+            thickness_row, textvariable=self.board_thickness_mm_var, width=6,
+            bg=TITLE_BG, fg=TEXT, insertbackground=TEXT, relief=tk.FLAT,
+            justify=tk.RIGHT, font=(FONT, 9),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+        tk.Label(thickness_row, text="mm", bg=C["surface_2"], fg=MUTED,
+                 font=(FONT, 9)).pack(side=tk.RIGHT)
         self.extrinsic_btn = self._button(
             plane_box,
             "SAVE MEASUREMENT SURFACE" if SURFACE_SETUP_ENABLED else "NOT REQUIRED",
@@ -422,6 +452,7 @@ class CalibrationApp:
             self._set_status("Restart this camera setup before changing the board method", AMBER)
             return
         self.use_two_boards = bool(enabled)
+        self._close_calibration_checks()
         self._init_detector()
         self._refresh_board_mode_ui()
         if self.use_two_boards:
@@ -500,13 +531,15 @@ class CalibrationApp:
                                  self._calibration_path().is_file())
             self.verify_btn.configure(
                 state=(tk.NORMAL if self.camera_running and saved_calibration
-                       and self.stage == "capture" and not self.processing_capture
+                       and self.stage not in ("calibrating", "extrinsic_capturing")
+                       and not self.processing_capture
                        and not self.processing_verification else tk.DISABLED)
             )
         self.extrinsic_btn.configure(
             state=(tk.NORMAL if SURFACE_SETUP_ENABLED and self.camera_running
                    and self.stage == "extrinsic_ready" else tk.DISABLED)
         )
+        self._refresh_check_window_buttons()
 
     def _calibration_path(self, camera_index=None):
         index = self.camera_index if camera_index is None else camera_index
@@ -526,6 +559,7 @@ class CalibrationApp:
             return
         if self.camera_running:
             self.stop_camera()
+        self._close_calibration_checks()
         self.camera_index = index
         self.stage = "select"
         self.captured_images = []
@@ -593,7 +627,7 @@ class CalibrationApp:
         method = "two numbered boards" if self.use_two_boards else "the board"
         if self._calibration_path().is_file():
             self._set_status(
-                "Saved calibration found — place the board in view and select TEST SAVED CALIBRATION"
+                "Saved calibration found — open Calibration Checks to verify it"
             )
             self.log("A saved calibration was found. Test it before recalibrating.")
         else:
@@ -638,6 +672,7 @@ class CalibrationApp:
     def update_frame(self):
         if self.closed:
             return
+        cycle_started = time.perf_counter()
         # Keep the last displayed capture visible while its board points are
         # processed. Board detection never runs in the live preview.
         if (not self.processing_capture and self.camera_running and
@@ -645,7 +680,7 @@ class CalibrationApp:
             ok, frame = self.cap.read()
             if ok:
                 with self.frame_lock:
-                    self.current_frame = frame.copy()
+                    self.current_frame = frame
                 scale = min(1.0, CONFIG['preview']['max_width'] / frame.shape[1],
                             CONFIG['preview']['max_height'] / frame.shape[0])
                 display = cv2.resize(frame, (max(1, int(frame.shape[1] * scale)),
@@ -653,7 +688,9 @@ class CalibrationApp:
                 self._draw_coverage_guide(display)
                 self._draw_capture_history(display)
                 self._show_frame(display)
-        self.preview_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_frame)
+        elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
+        delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
+        self.preview_job = self.root.after(delay_ms, self.update_frame)
 
     def _recommended_cell(self):
         last_cell = None
@@ -816,9 +853,160 @@ class CalibrationApp:
             target=self._detect_capture_worker, args=(frame, file_path), daemon=True,
         ).start()
 
+    def open_calibration_checks(self):
+        """Open the combined lens and metric-measurement verification window."""
+        if self.camera_index is None or not self.camera_running:
+            messagebox.showwarning("Camera required", "Select and start a camera first.")
+            return
+        if self.check_window is not None and self.check_window.winfo_exists():
+            self.check_window.lift()
+            return
+
+        window = tk.Toplevel(self.root)
+        self.check_window = window
+        window.title(f"Camera {self.camera_index} Calibration Checks")
+        window.geometry(self._centered_geometry(1120, 700))
+        window.minsize(900, 600)
+        window.configure(bg=BG)
+        window.transient(self.root)
+        window.protocol("WM_DELETE_WINDOW", self._close_calibration_checks)
+
+        header = tk.Frame(window, bg=TITLE_BG, height=TITLE_BAR_HEIGHT)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(header, text="CALIBRATION CHECKS", bg=TITLE_BG, fg=TEXT,
+                 font=(FONT, 12, "bold")).pack(side=tk.LEFT, padx=16, pady=10)
+        tk.Label(
+            header,
+            text=("TWO-BOARD MODE" if self.use_two_boards else "ONE-BOARD MODE"),
+            bg=TITLE_BG, fg=PURPLE, font=(FONT, 9, "bold"),
+        ).pack(side=tk.LEFT, padx=8)
+        themed_button(header, "CLOSE", self._close_calibration_checks,
+                      role="quiet", width=8).pack(side=tk.RIGHT, padx=10, pady=6)
+
+        body = tk.Frame(window, bg=BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        preview = themed_card(body, bg=CANVAS_BG)
+        preview.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.check_image_label = tk.Label(
+            preview, text="Run a check to capture and analyse the current frame",
+            bg=CANVAS_BG, fg=MUTED, font=(FONT, 12),
+        )
+        self.check_image_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        controls = themed_card(body, bg=PANEL)
+        controls.grid(row=0, column=1, sticky="nsew")
+        tk.Label(controls, text="Fresh verification capture", bg=PANEL, fg=TEXT,
+                 font=(FONT, 16, "bold")).pack(anchor="w", padx=14, pady=(14, 3))
+        tk.Label(
+            controls,
+            text=("Move the board to a different place on the saved surface. "
+                  "In two-board mode, show both numbered boards. Keep every board flat."),
+            bg=PANEL, fg=MUTED, justify=tk.LEFT, wraplength=380, font=(FONT, 9),
+        ).pack(anchor="w", padx=14, pady=(0, 10))
+
+        self.check_lens_btn = themed_button(
+            controls, "CHECK LENS CALIBRATION", self.verify_saved_calibration,
+            role="blue", width=29, pady=10,
+        )
+        self.check_lens_btn.pack(fill=tk.X, padx=14, pady=(0, 7))
+        self.check_measurement_btn = themed_button(
+            controls, "CHECK MEASUREMENT ACCURACY", self.verify_measurement_accuracy,
+            role="purple", width=29, pady=10,
+        )
+        self.check_measurement_btn.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+        thickness = CONFIG['measurement_surface'].get('board_thickness', {})
+        thickness_state = ("enabled" if self.board_thickness_enabled_var.get()
+                           else "disabled")
+        self.check_plane_info = tk.Label(
+            controls,
+            text=(f"Board-thickness correction: {thickness_state} "
+                  f"({thickness.get('thickness_mm', 2.0):g} mm configured)"),
+            bg=C["surface_2"], fg=C["text_soft"], justify=tk.LEFT,
+            wraplength=380, font=(FONT, 9), padx=10, pady=8,
+        )
+        self.check_plane_info.pack(fill=tk.X, padx=14, pady=(0, 10))
+
+        self.check_report = scrolledtext.ScrolledText(
+            controls, bg=TITLE_BG, fg=C["text_soft"], insertbackground=TEXT,
+            font=(MONO_FONT, 9), wrap=tk.WORD, relief=tk.FLAT, height=18,
+        )
+        self.check_report.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
+        self._set_check_report(
+            "Lens check reports reprojection error in pixels.\n\n"
+            "Measurement check uses the saved surface calibration and reports "
+            "known ChArUco distances, short/long errors, RMSE and maximum error. "
+            "No PASS/FAIL limit is applied."
+        )
+        self._refresh_check_window_buttons()
+
+    def _close_calibration_checks(self):
+        window = getattr(self, 'check_window', None)
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        self.check_window = None
+
+    def _refresh_check_window_buttons(self):
+        window = getattr(self, 'check_window', None)
+        if window is None or not window.winfo_exists():
+            return
+        busy = bool(self.processing_capture or self.processing_verification)
+        lens_ready = self.camera_running and self._calibration_path().is_file() and not busy
+        metric_ready = lens_ready and self._extrinsics_path().is_file()
+        self.check_lens_btn.configure(state=tk.NORMAL if lens_ready else tk.DISABLED)
+        self.check_measurement_btn.configure(state=tk.NORMAL if metric_ready else tk.DISABLED)
+        if not self._extrinsics_path().is_file():
+            self.check_plane_info.configure(
+                text="Save the measurement surface before checking millimetre accuracy.",
+                fg=AMBER,
+            )
+        else:
+            try:
+                saved = json.loads(self._extrinsics_path().read_text(encoding="utf-8"))
+                thickness = saved.get("board_thickness", {})
+                if thickness.get("enabled", False):
+                    text = (
+                        "Saved product plane: bed surface, corrected by "
+                        f"{float(thickness.get('thickness_mm', 0.0)):.3f} mm"
+                    )
+                else:
+                    text = "Saved product plane: ChArUco board top (thickness disabled)"
+                self.check_plane_info.configure(text=text, fg=C["text_soft"])
+            except (OSError, ValueError, TypeError):
+                self.check_plane_info.configure(
+                    text="Saved measurement-surface metadata could not be read.", fg=AMBER,
+                )
+
+    def _set_check_report(self, text):
+        if not hasattr(self, 'check_report') or not self.check_report.winfo_exists():
+            return
+        self.check_report.configure(state=tk.NORMAL)
+        self.check_report.delete("1.0", tk.END)
+        self.check_report.insert(tk.END, text)
+        self.check_report.configure(state=tk.DISABLED)
+
+    def _show_check_frame(self, frame):
+        if not hasattr(self, 'check_image_label') or not self.check_image_label.winfo_exists():
+            self._show_frame(frame)
+            return
+        width = max(2, self.check_image_label.winfo_width())
+        height = max(2, self.check_image_label.winfo_height())
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        image.thumbnail((width, height), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (width, height), CANVAS_BG)
+        canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
+        photo = ImageTk.PhotoImage(canvas)
+        self.check_image_label.image = photo
+        self.check_image_label.configure(image=photo, text="")
+
     def verify_saved_calibration(self):
         """Check a fresh ChArUco capture against the saved intrinsic calibration."""
-        if (self.current_frame is None or self.stage != "capture" or
+        if (self.current_frame is None or
                 self.processing_capture or self.processing_verification):
             return
         calibration_path = self._calibration_path()
@@ -829,6 +1017,7 @@ class CalibrationApp:
             frame = self.current_frame.copy()
         self.processing_verification = True
         self._set_status("Testing the saved calibration…", AMBER)
+        self._set_check_report("Checking lens calibration from a fresh frame…")
         self._refresh_stage_ui()
         threading.Thread(
             target=self._verify_saved_calibration_worker, args=(frame, calibration_path), daemon=True,
@@ -843,31 +1032,55 @@ class CalibrationApp:
             if len(calibration_size) != 2:
                 raise ValueError("The saved calibration has no valid image size")
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            corners, ids, _, _ = self.charuco_detector.detectBoard(gray)
-            corner_count = len(ids) if ids is not None else 0
-            if corner_count < MIN_CORNERS:
-                raise ValueError(
-                    f"Only {corner_count}/{MIN_CORNERS} board points were found. "
-                    "Show more of the board, improve lighting, and try again."
-                )
             frame_size = gray.shape[::-1]
             scaled_matrix = scale_camera_matrix(camera_matrix, calibration_size, frame_size)
-            rvec, tvec, metrics, object_points, _ = estimate_planar_pose(
-                self.board, corners, ids, scaled_matrix, dist_coeffs,
-            )
-            annotated = self._annotate_detected_board(frame, corners, ids)
-            cv2.drawFrameAxes(annotated, scaled_matrix, dist_coeffs, rvec, tvec, 0.05, 4)
+            detections = []
+            board_metrics = []
+            total_points = 0
+            detector_count = 2 if self.use_two_boards else 1
+            for board_index in range(detector_count):
+                corners, ids, _, _ = self.charuco_detectors[board_index].detectBoard(gray)
+                corner_count = len(ids) if ids is not None else 0
+                if corner_count < MIN_CORNERS:
+                    raise ValueError(
+                        f"Board {board_index + 1}: only {corner_count}/{MIN_CORNERS} "
+                        "points were found. Show the board clearly and try again."
+                    )
+                rvec, tvec, metrics, object_points, image_points = estimate_planar_pose(
+                    self.boards[board_index], corners, ids, scaled_matrix, dist_coeffs,
+                )
+                total_points += len(object_points)
+                board_metrics.append((metrics, len(object_points)))
+                detections.append({
+                    "board_index": board_index, "corners": corners, "ids": ids,
+                    "image_points": image_points, "rvec": rvec, "tvec": tvec,
+                })
+            annotated = self._annotate_board_views(frame, detections)
+            for detection in detections:
+                cv2.drawFrameAxes(
+                    annotated, scaled_matrix, dist_coeffs,
+                    detection["rvec"], detection["tvec"], 0.05, 4,
+                )
+            metrics = {
+                "rms": float(np.sqrt(sum(
+                    item[0]["rms"] ** 2 * item[1] for item in board_metrics
+                ) / total_points)),
+                "mean": float(sum(
+                    item[0]["mean"] * item[1] for item in board_metrics
+                ) / total_points),
+                "max": float(max(item[0]["max"] for item in board_metrics)),
+            }
             is_ok = metrics["rms"] <= MAX_VERIFICATION_RMS_PX
             self.root.after(
                 0, self._verification_complete, annotated, metrics,
-                len(object_points), is_ok,
+                total_points, is_ok, detector_count,
             )
         except Exception as error:
             self.root.after(0, self._verification_failed, str(error))
 
-    def _verification_complete(self, annotated, metrics, corner_count, is_ok):
+    def _verification_complete(self, annotated, metrics, corner_count, is_ok, board_count=1):
         self.processing_verification = False
-        self._show_frame(annotated)
+        self._show_check_frame(annotated)
         result = "CALIBRATION OK" if is_ok else "RECALIBRATION RECOMMENDED"
         color = GREEN if is_ok else RED
         details = (f"{result} — RMS {metrics['rms']:.2f} px "
@@ -875,6 +1088,16 @@ class CalibrationApp:
                    f"{corner_count} points)")
         self._set_status(details, color)
         self.log(details)
+        self._set_check_report(
+            "LENS CALIBRATION CHECK\n"
+            f"Boards checked:          {board_count}\n"
+            f"Detected board points:   {corner_count}\n"
+            f"Reprojection RMS:        {metrics['rms']:.3f} px\n"
+            f"Mean reprojection error: {metrics['mean']:.3f} px\n"
+            f"Maximum error:           {metrics['max']:.3f} px\n\n"
+            "This checks the saved lens model. Use CHECK MEASUREMENT ACCURACY "
+            "to validate millimetre distances on the saved plane."
+        )
         self._refresh_stage_ui()
         messagebox.showinfo(
             "Calibration check",
@@ -890,8 +1113,172 @@ class CalibrationApp:
         self.processing_verification = False
         self._set_status("Calibration could not be checked — show the board clearly", RED)
         self.log(f"Calibration check failed: {error}")
+        self._set_check_report(f"Lens calibration check failed.\n\n{error}")
         self._refresh_stage_ui()
         messagebox.showwarning("Calibration check", error)
+
+    def verify_measurement_accuracy(self):
+        """Measure known ChArUco spans through the saved fixed-plane calibration."""
+        if (self.current_frame is None or self.processing_capture
+                or self.processing_verification):
+            return
+        calibration_path = self._calibration_path()
+        extrinsics_path = self._extrinsics_path()
+        if not calibration_path.is_file() or not extrinsics_path.is_file():
+            self._set_check_report(
+                "Lens calibration and a saved measurement surface are required."
+            )
+            return
+        with self.frame_lock:
+            frame = self.current_frame.copy()
+        self.processing_verification = True
+        self._set_status("Checking real-world ChArUco distances…", AMBER)
+        self._set_check_report(
+            "Detecting the board and measuring short and long distances…"
+        )
+        self._refresh_stage_ui()
+        threading.Thread(
+            target=self._measurement_accuracy_worker,
+            args=(frame, calibration_path, extrinsics_path), daemon=True,
+        ).start()
+
+    def _measurement_accuracy_worker(self, frame, calibration_path, extrinsics_path):
+        try:
+            calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+            extrinsics = json.loads(extrinsics_path.read_text(encoding="utf-8"))
+            calibration_size = tuple(calibration["image_size"])
+            frame_size = (frame.shape[1], frame.shape[0])
+            camera_matrix = scale_camera_matrix(
+                np.asarray(calibration["camera_matrix"], np.float64),
+                calibration_size, frame_size,
+            )
+            dist_coeffs = np.asarray(calibration["dist_coeffs"], np.float64)
+            plane_rvec = np.asarray(extrinsics["rvec"], np.float64).reshape(3, 1)
+            plane_tvec = np.asarray(extrinsics["tvec"], np.float64).reshape(3, 1)
+            thickness = extrinsics.get("board_thickness", {})
+            if thickness.get("enabled", False):
+                # The saved product plane is the bed. The printed verification
+                # corners are on top of a board resting on it, so move the test
+                # plane back toward the camera by the same physical thickness.
+                plane_tvec = offset_plane_tvec(
+                    plane_rvec, plane_tvec,
+                    float(thickness.get("thickness_mm", 0.0)),
+                    away_from_camera=False,
+                )
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            detections = []
+            rows = []
+            detector_count = 2 if self.use_two_boards else 1
+            for board_index in range(detector_count):
+                corners, ids, _, _ = self.charuco_detectors[board_index].detectBoard(gray)
+                corner_count = len(ids) if ids is not None else 0
+                if corner_count < MIN_CORNERS:
+                    raise ValueError(
+                        f"Board {board_index + 1}: only {corner_count}/{MIN_CORNERS} "
+                        "points were found. Show more of the board and try again."
+                    )
+                board_rows = measure_board_accuracy(
+                    self.boards[board_index], corners, ids,
+                    camera_matrix, dist_coeffs, plane_rvec, plane_tvec,
+                    SQUARE_LENGTH_MM, board_number=board_index + 1,
+                )
+                rows.extend(board_rows)
+                detections.append({
+                    "board_index": board_index, "corners": corners, "ids": ids,
+                    "image_points": corners,
+                })
+
+            summary = summarize_accuracy(rows)
+            annotated = self._annotate_board_views(frame, detections)
+            overall = summary["overall"]
+            scale = max(0.7, frame.shape[1] / 1800.0)
+            cv2.putText(
+                annotated,
+                f"Mean abs error {overall['mean_absolute_error_mm']:.3f} mm",
+                (25, 45), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                self._hex_to_bgr(GREEN), max(2, round(2 * scale)), cv2.LINE_AA,
+            )
+            cv2.putText(
+                annotated,
+                f"RMSE {overall['rmse_mm']:.3f} mm  Max {overall['maximum_absolute_error_mm']:.3f} mm",
+                (25, 85), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                self._hex_to_bgr(AMBER), max(2, round(2 * scale)), cv2.LINE_AA,
+            )
+            self.root.after(
+                0, self._measurement_accuracy_complete,
+                annotated, rows, summary, extrinsics,
+            )
+        except Exception as error:
+            self.root.after(0, self._measurement_accuracy_failed, str(error))
+
+    @staticmethod
+    def _accuracy_metrics_text(title, metrics):
+        if not metrics:
+            return f"{title}: no usable distances"
+        return (
+            f"{title}\n"
+            f"  measurements: {metrics['count']}\n"
+            f"  mean absolute error: {metrics['mean_absolute_error_mm']:.3f} mm\n"
+            f"  RMSE:                {metrics['rmse_mm']:.3f} mm\n"
+            f"  maximum error:       {metrics['maximum_absolute_error_mm']:.3f} mm\n"
+            f"  mean signed error:   {metrics['mean_signed_error_mm']:+.3f} mm"
+        )
+
+    def _measurement_accuracy_complete(self, annotated, rows, summary, extrinsics):
+        self.processing_verification = False
+        self._show_check_frame(annotated)
+        thickness = extrinsics.get("board_thickness", {})
+        correction_text = (
+            f"enabled ({float(thickness.get('thickness_mm', 0.0)):.3f} mm)"
+            if thickness.get("enabled", False) else "disabled"
+        )
+        report_parts = [
+            "REAL-WORLD MEASUREMENT CHECK",
+            f"Board mode: {'two boards' if self.use_two_boards else 'one board'}",
+            f"Board-thickness correction: {correction_text}",
+            "No PASS/FAIL limit is applied.",
+            "",
+            self._accuracy_metrics_text("SHORT DISTANCES", summary.get("short")),
+            "",
+            self._accuracy_metrics_text("LONG DISTANCES", summary.get("long")),
+            "",
+            self._accuracy_metrics_text("OVERALL", summary["overall"]),
+            "",
+            "Largest individual errors:",
+        ]
+        largest = sorted(
+            rows, key=lambda item: item["absolute_error_mm"], reverse=True,
+        )[:12]
+        for row in largest:
+            report_parts.append(
+                f"  B{row['board']} {row['category']:<5}  "
+                f"expected {row['expected_mm']:7.2f} mm  "
+                f"measured {row['measured_mm']:7.2f} mm  "
+                f"error {row['error_mm']:+7.3f} mm "
+                f"({row['error_percent']:+6.2f}%)"
+            )
+        report = "\n".join(report_parts)
+        self._set_check_report(report)
+        self._set_status(
+            f"Measurement check complete — mean error "
+            f"{summary['overall']['mean_absolute_error_mm']:.3f} mm",
+            GREEN,
+        )
+        self.log(
+            f"Measurement accuracy checked: {summary['overall']['count']} distances, "
+            f"mean absolute error {summary['overall']['mean_absolute_error_mm']:.3f} mm, "
+            f"maximum {summary['overall']['maximum_absolute_error_mm']:.3f} mm."
+        )
+        self._refresh_stage_ui()
+
+    def _measurement_accuracy_failed(self, error):
+        self.processing_verification = False
+        self._set_check_report(f"Measurement accuracy check failed.\n\n{error}")
+        self._set_status("Measurement accuracy could not be checked", RED)
+        self.log(f"Measurement accuracy check failed: {error}")
+        self._refresh_stage_ui()
+        messagebox.showwarning("Measurement accuracy check", error)
 
     def _detect_capture_worker(self, frame, file_path):
         """Save, reload and detect one pressed capture away from Tk's UI thread."""
@@ -1358,14 +1745,27 @@ class CalibrationApp:
         if (not SURFACE_SETUP_ENABLED or self.stage != "extrinsic_ready"
                 or self.current_frame is None):
             return
+        thickness_enabled = bool(self.board_thickness_enabled_var.get())
+        try:
+            thickness_mm = float(self.board_thickness_mm_var.get())
+            if not np.isfinite(thickness_mm) or thickness_mm < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            messagebox.showwarning(
+                "Board thickness", "Enter a non-negative board thickness in millimetres."
+            )
+            return
         with self.frame_lock:
             frame = self.current_frame.copy()
         self.stage = "extrinsic_capturing"
         self._set_status("Saving the measurement surface…", AMBER)
         self._refresh_stage_ui()
-        threading.Thread(target=self._extrinsic_worker, args=(frame,), daemon=True).start()
+        threading.Thread(
+            target=self._extrinsic_worker,
+            args=(frame, thickness_enabled, thickness_mm), daemon=True,
+        ).start()
 
-    def _extrinsic_worker(self, frame):
+    def _extrinsic_worker(self, frame, thickness_enabled=False, thickness_mm=0.0):
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             corners, ids, _, _ = self.charuco_detector.detectBoard(gray)
@@ -1395,14 +1795,30 @@ class CalibrationApp:
             )
             cv2.imwrite(str(annotated_path), annotated)
 
+            reference_board_tvec = tvec.copy()
+            measurement_tvec = (
+                offset_plane_tvec(rvec, tvec, thickness_mm, away_from_camera=True)
+                if thickness_enabled and thickness_mm > 0 else tvec.copy()
+            )
             data = {
                 "rvec": rvec.reshape(-1).tolist(),
-                "tvec": tvec.reshape(-1).tolist(),
+                "tvec": measurement_tvec.reshape(-1).tolist(),
+                "reference_board_tvec": reference_board_tvec.reshape(-1).tolist(),
                 "reprojection_error": metrics,
                 "image_size": list(frame_size),
                 "corner_count": int(len(object_points)),
                 "reference_image": str(reference_path.relative_to(PROJECT_ROOT)),
-                "coordinate_system": "ChArUco board plane; lengths stored in metres",
+                "coordinate_system": (
+                    "ChArUco XY axes on bed plane; lengths stored in metres"
+                    if thickness_enabled else
+                    "ChArUco board-top plane; lengths stored in metres"
+                ),
+                "board_thickness": {
+                    "enabled": bool(thickness_enabled),
+                    "thickness_mm": float(thickness_mm),
+                    "measurement_plane": ("bed below board" if thickness_enabled
+                                          else "top of ChArUco board"),
+                },
                 "board": {
                     "squares_x": SQUARES_X, "squares_y": SQUARES_Y,
                     "square_length_mm": SQUARE_LENGTH_MM,
@@ -1412,28 +1828,38 @@ class CalibrationApp:
                 },
             }
             self._extrinsics_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
-            self.root.after(0, self._extrinsic_complete, frame, metrics, tvec)
+            self.root.after(
+                0, self._extrinsic_complete, annotated, metrics,
+                measurement_tvec, thickness_enabled, thickness_mm,
+            )
         except Exception as error:
             self.root.after(0, self._extrinsic_failed, str(error))
 
-    def _extrinsic_complete(self, annotated, metrics, tvec):
+    def _extrinsic_complete(
+            self, annotated, metrics, tvec,
+            thickness_enabled=False, thickness_mm=0.0):
         self.stage = "complete"
-        self.camera_running = False
-        if self.cap is not None:
-            if not self.camera_provider: self.cap.release()
-            self.cap = None
-        self.stop_btn.configure(state=tk.DISABLED)
+        self.stop_btn.configure(state=tk.NORMAL)
         self.start_btn.configure(state=tk.DISABLED)
-        self.resolution_label.configure(text=f"Camera {self.camera_index}  •  setup complete")
+        self.resolution_label.configure(
+            text=f"Camera {self.camera_index}  •  setup complete  •  live for checks"
+        )
         self._set_status("Setup complete — keep the camera fixed", GREEN)
         self.log("Measurement surface saved successfully.")
+        if thickness_enabled:
+            self.log(
+                f"Measurement plane corrected {thickness_mm:.3f} mm from board top to bed."
+            )
+        else:
+            self.log("Board-thickness correction is disabled.")
         self.log("Camera setup is complete and ready to use.")
         self._show_frame(annotated)
         self._refresh_stage_ui()
         messagebox.showinfo(
             "Setup Complete",
             f"Camera {self.camera_index} setup is complete.\n\n"
-            "Keep the camera and measurement surface fixed.",
+            "Keep the camera and measurement surface fixed.\n"
+            "Open Calibration Checks to validate real-world distances.",
         )
 
     def _extrinsic_failed(self, error):
@@ -1455,6 +1881,7 @@ class CalibrationApp:
             self._set_status("Please wait for the current step to finish before going back", AMBER)
             return
         self.closed = True
+        self._close_calibration_checks()
         if getattr(self, '_controls_wheel_binding', None):
             self.root.unbind("<MouseWheel>", self._controls_wheel_binding)
             self._controls_wheel_binding = None

@@ -1258,6 +1258,7 @@ class IndustrialDashboard:
     def update_video_feed(self):
         if not self.video_streaming:
             return
+        cycle_started = time.perf_counter()
         if self.video_paused:
             self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
             return
@@ -1266,31 +1267,35 @@ class IndustrialDashboard:
         ret1, raw1 = self.camera1.get_raw_frame_with_ret()
         ret2, raw2 = self.camera2.get_raw_frame_with_ret()
 
-        if ret1 and ret2:
-            # Force layout update so canvas sizes are correct
-            self.root.update_idletasks()
-            
-            if getattr(self, "crop_setup_active", False):
-                if not self.crop_frozen:
-                    # CameraStream has already applied the configured rotation.
-                    # Show raw frames here; CAPTURE performs lens correction once.
-                    frame = raw1 if self.crop_selected_camera == 1 else raw2
-                    if frame is not None:
-                        self.crop_live_frame = frame.copy()
-                        self._display_crop_setup_frame(self.crop_live_frame)
-            else:
-                if self.maximized_camera is None:
-                    # Show both
-                    self._display_video_frame(raw1, 1)
-                    self._display_video_frame(raw2, 2)
-                else:
-                    # Show only the selected camera
-                    if self.maximized_camera == 1:
-                        self._display_video_frame(raw1, 1)
-                    else:
-                        self._display_video_frame(raw2, 2)
+        if getattr(self, "crop_setup_active", False):
+            if not self.crop_frozen:
+                # CameraStream has already applied the configured rotation.
+                # Show the immutable latest snapshot directly; CAPTURE copies
+                # and performs lens correction once.
+                selected_ok = ret1 if self.crop_selected_camera == 1 else ret2
+                frame = raw1 if self.crop_selected_camera == 1 else raw2
+                if selected_ok and frame is not None:
+                    self.crop_live_frame = frame
+                    self._display_crop_setup_frame(frame)
+        elif self.maximized_camera is None:
+            # Update each available camera independently. One delayed device
+            # should not prevent the other preview from refreshing.
+            if ret1:
+                self._display_video_frame(raw1, 1)
+            if ret2:
+                self._display_video_frame(raw2, 2)
+        elif self.maximized_camera == 1:
+            if ret1:
+                self._display_video_frame(raw1, 1)
+        elif ret2:
+            self._display_video_frame(raw2, 2)
 
-        self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
+        # Tk's after() delay begins only after this callback returns. Subtract
+        # processing time so the configured interval represents frame-to-frame
+        # cadence instead of processing time plus another full interval.
+        elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
+        delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
+        self._video_job = self.root.after(delay_ms, self.update_video_feed)
 
     def _display_video_frame(self, frame, canvas_num):
         """Display a frame on the specified canvas, automatically resizing to canvas size."""

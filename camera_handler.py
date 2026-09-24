@@ -114,7 +114,7 @@ class CameraStream:
                 self.resolution_warning = self._resolution_message(requested, actual)
             _write_cached_resolution(index, signature, actual)
             self.size = self._rotated_size(actual)
-            self.frame = self._rotate_frame(frame)
+            self.frame = frame
         except Exception:
             self.cap.release()
             raise
@@ -159,8 +159,10 @@ class CameraStream:
         try:
             while not self.stopped.is_set():
                 ok, frame = self.cap.read()
+                # Keep acquisition limited to reading and swapping the newest
+                # raw frame. Any transformation here can let a driver queue grow.
                 with self.lock:
-                    self.frame = self._rotate_frame(frame) if ok and frame is not None else None
+                    self.frame = frame if ok and frame is not None else None
                 if not ok:
                     time.sleep(0.05)
         except Exception as error:
@@ -173,7 +175,12 @@ class CameraStream:
     def read(self):
         with self.lock:
             frame = self.frame
-        return (False, None) if frame is None or self.stopped.is_set() else (True, frame.copy())
+        if frame is None or self.stopped.is_set():
+            return False, None
+        # Capture always replaces the ndarray instead of modifying it, so the
+        # snapshot is safe after releasing the lock. Apply rotation here so it
+        # can never delay acquisition of the next device frame.
+        return True, self._rotate_frame(frame)
 
     def isOpened(self):
         return not self.stopped.is_set() and self.thread.is_alive()

@@ -228,10 +228,11 @@ class PerCaptureProcessingTests(unittest.TestCase):
         app.log = MagicMock()
         app._refresh_stage_ui = MagicMock()
 
-        app._intrinsic_complete(
-            np.eye(3), np.zeros((5, 1)), (1200, 900), 0.5,
-            calibration_ui.NUM_CAPTURES,
-        )
+        with patch.object(calibration_ui, 'SURFACE_SETUP_ENABLED', False):
+            app._intrinsic_complete(
+                np.eye(3), np.zeros((5, 1)), (1200, 900), 0.5,
+                calibration_ui.NUM_CAPTURES,
+            )
 
         self.assertEqual(app.stage, 'complete')
         self.assertFalse(app.camera_running)

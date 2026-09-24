@@ -78,12 +78,20 @@ sizes in millimetres, and OpenCV dictionary name. These must match the actual bo
 `calibration` controls the required photo count, minimum valid photos/corners and
 quality checks. Numerical quality thresholds are for maintainers; operators see
 simple instructions in the app. Standalone board tools read the same parameters.
-After selecting a camera and starting its live feed, **Test Saved Calibration**
-captures one ChArUco-board image and reports the board-pose reprojection RMS. A
+After selecting a camera and starting its live feed, **Open Calibration Checks**
+opens the combined lens and real-world measurement checker. The lens check captures
+one fresh ChArUco-board image and reports the board-pose reprojection RMS. A
 result at or below `calibration.verification_max_rms_px` (default `1.0` pixels)
 means the saved lens calibration is suitable for that test view; a higher result
-recommends recalibration. This is a quick lens/focus/view check, not a replacement
-for verifying final product measurements.
+recommends recalibration.
+
+After the measurement surface has been saved, **Check Measurement Accuracy** uses
+the saved fixed-plane pose instead of estimating a new pose from the test image. It
+compares detected ChArUco geometry with known short and long board distances and
+reports measured distance, signed/absolute millimetre error, percentage error,
+mean absolute error, RMSE and maximum error. It intentionally does not assign a
+PASS/FAIL grade. In two-board mode both uniquely numbered boards must be visible;
+distances are checked inside each board because their separation is not fixed.
 
 `two_board.enabled` selects the initial Camera Setup method. The operator can also
 switch between **One Board** and **Two Boards** directly in Camera Setup before the
@@ -133,6 +141,13 @@ later measurement stage:
 The current inspection implementation prepares and saves the two deskewed crops
 only. It does not yet run the model, calculate millimetres, or make PASS/FAIL
 decisions; those stages will be connected after crop preprocessing is validated.
+
+`measurement_surface.board_thickness` controls the optional correction from the
+top of the ChArUco board to the bed beneath it. It is disabled by default. When the
+operator enables **Correct board thickness to bed plane** before saving the surface,
+the entered thickness is used to move the stored product-measurement plane away
+from the camera. The unshifted board-top pose is also saved so a later accuracy
+check can correctly measure a verification board resting on the same bed.
 
 The default marker is `DICT_4X4_50`, ID `0`, with a 25 mm side.
 `aruco_marker_length_mm` must equal the measured outer black-square side of the

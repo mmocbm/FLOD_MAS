@@ -42,7 +42,11 @@ class CaptureTests(unittest.TestCase):
         try:
             ok, frame = stream.read()
             self.assertTrue(ok)
-            self.assertEqual(frame.shape[:2], (spec['height'], spec['width']))
+            expected_size = ((spec['height'], spec['width'])
+                             if spec.get('rotation', 0) in (90, 270)
+                             else (spec['width'], spec['height']))
+            self.assertEqual(stream.size, expected_size)
+            self.assertEqual(frame.shape[:2], (expected_size[1], expected_size[0]))
             self.assertEqual(stream.cap.properties[cv2.CAP_PROP_FRAME_WIDTH], spec['width'])
             self.assertEqual(stream.cap.properties[cv2.CAP_PROP_FRAME_HEIGHT], spec['height'])
         finally:
@@ -109,9 +113,15 @@ class CaptureTests(unittest.TestCase):
         with patch('camera_handler.cv2.VideoCapture', side_effect=NegotiatingDevice):
             stream = CameraStream(CONFIG['cameras'][0]['index'])
             try:
-                self.assertEqual(stream.size, (1920, 1080))
+                expected_size = ((1080, 1920)
+                                 if CONFIG['cameras'][0].get('rotation', 0) in (90, 270)
+                                 else (1920, 1080))
+                self.assertEqual(stream.size, expected_size)
                 self.assertIn('1920 x 1080', stream.resolution_warning)
-                self.assertEqual(stream.read()[1].shape[:2], (1080, 1920))
+                self.assertEqual(
+                    stream.read()[1].shape[:2],
+                    (expected_size[1], expected_size[0]),
+                )
             finally:
                 stream.release()
                 stream.thread.join(1)
@@ -143,7 +153,10 @@ class CaptureTests(unittest.TestCase):
             try:
                 self.assertGreater(len(NegotiatingDevice.instances[0].width_requests), 1)
                 self.assertEqual(NegotiatingDevice.instances[1].width_requests, [1920])
-                self.assertEqual(second.size, (1920, 1080))
+                expected_size = ((1080, 1920)
+                                 if CONFIG['cameras'][0].get('rotation', 0) in (90, 270)
+                                 else (1920, 1080))
+                self.assertEqual(second.size, expected_size)
                 self.assertIn('Best available size found', second.resolution_warning)
             finally:
                 second.release()

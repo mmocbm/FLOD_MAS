@@ -32,6 +32,11 @@ if not crop_setup.get('definitions_file'):
 board = CONFIG["board"]
 if not isinstance(CONFIG['capture'].get('use_dshow'), bool):
     raise ValueError("Capture use_dshow must be true or false")
+thickness = CONFIG['measurement_surface'].get('board_thickness', {})
+if not isinstance(thickness.get('enabled'), bool):
+    raise ValueError("Measurement board thickness enabled must be true or false")
+if thickness.get('thickness_mm', 0) < 0:
+    raise ValueError("Measurement board thickness must not be negative")
 if CONFIG['capture']['verification_frames'] < 1:
     raise ValueError("Capture verification_frames must be positive")
 if not CONFIG['capture'].get('resolution_cache_file'):
