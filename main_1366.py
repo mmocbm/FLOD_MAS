@@ -460,7 +460,6 @@ class IndustrialDashboard:
 
         self._camera_tool_page = page
         self.calibration_page = tk.Frame(self.root, bg=C["bg"])
-        self.calibration_page.pack(fill=tk.BOTH, expand=True)
         self.root.deiconify()
         try:
             if page == "checks":
@@ -477,6 +476,10 @@ class IndustrialDashboard:
                     on_open_checks=self.open_calibration_checks_page,
                     camera_provider=self._setup_camera_stream,
                 )
+            # Build the controls offscreen and settle their geometry before
+            # exposing the new page, avoiding a partially painted transition.
+            self.calibration_page.update_idletasks()
+            self.calibration_page.pack(fill=tk.BOTH, expand=True)
         except Exception as e:
             self.close_camera_setup()
             self._show_error_popup(f"Could not open camera tool:\n{e}")
@@ -1079,7 +1082,7 @@ class IndustrialDashboard:
         self.left_frame = themed_card(self.images_container, bg=C["surface"])
         self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         left_header = tk.Frame(self.left_frame, bg=C["surface"], height=38)
-        left_header.pack(fill=tk.X, padx=12)
+        left_header.pack(fill=tk.X, padx=14, pady=(5, 0))
         left_header.pack_propagate(False)
         status_dot(left_header).pack(side=tk.LEFT, pady=14, padx=(0, 7))
         tk.Label(left_header, text="LEFT CAMERA", bg=C["surface"], fg=C["text_soft"],
@@ -1088,24 +1091,13 @@ class IndustrialDashboard:
                  font=(FONT, 8, "bold")).pack(side=tk.RIGHT, pady=10)
 
         self.canvas_1 = tk.Canvas(self.left_frame, bg=C["camera"], highlightthickness=0)
-        self.canvas_1.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
-
-        self.toolbar_1 = tk.Frame(self.canvas_1, bg=C["surface"], bd=0,
-                                  highlightbackground=C["border_strong"], highlightthickness=1)
-        themed_button(self.toolbar_1, "+", self.zoom_in_1, role="quiet", width=2,
-                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(2, 0))
-        themed_button(self.toolbar_1, "−", self.zoom_out_1, role="quiet", width=2,
-                      padx=4, pady=5).pack(side=tk.TOP, padx=2)
-        themed_button(self.toolbar_1, "↺", self.reset_view_1, role="quiet", width=2,
-                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(0, 2))
-        # Store the canvas window ID for later repositioning
-        self.toolbar_win_id_1 = self.canvas_1.create_window(0, 0, anchor="ne", window=self.toolbar_1)
+        self.canvas_1.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 12))
 
         # ---- right ----
         self.right_frame = themed_card(self.images_container, bg=C["surface"])
         self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
         right_header = tk.Frame(self.right_frame, bg=C["surface"], height=38)
-        right_header.pack(fill=tk.X, padx=12)
+        right_header.pack(fill=tk.X, padx=14, pady=(5, 0))
         right_header.pack_propagate(False)
         status_dot(right_header).pack(side=tk.LEFT, pady=14, padx=(0, 7))
         tk.Label(right_header, text="RIGHT CAMERA", bg=C["surface"], fg=C["text_soft"],
@@ -1114,21 +1106,7 @@ class IndustrialDashboard:
                  font=(FONT, 8, "bold")).pack(side=tk.RIGHT, pady=10)
 
         self.canvas_2 = tk.Canvas(self.right_frame, bg=C["camera"], highlightthickness=0)
-        self.canvas_2.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
-
-        self.toolbar_2 = tk.Frame(self.canvas_2, bg=C["surface"], bd=0,
-                                  highlightbackground=C["border_strong"], highlightthickness=1)
-        themed_button(self.toolbar_2, "+", self.zoom_in_2, role="quiet", width=2,
-                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(2, 0))
-        themed_button(self.toolbar_2, "−", self.zoom_out_2, role="quiet", width=2,
-                      padx=4, pady=5).pack(side=tk.TOP, padx=2)
-        themed_button(self.toolbar_2, "↺", self.reset_view_2, role="quiet", width=2,
-                      padx=4, pady=5).pack(side=tk.TOP, padx=2, pady=(0, 2))
-        self.toolbar_win_id_2 = self.canvas_2.create_window(0, 0, anchor="ne", window=self.toolbar_2)
-
-        # Bind configure events to reposition toolbars when canvas resizes
-        self.canvas_1.bind("<Configure>", self._reposition_toolbar_1)
-        self.canvas_2.bind("<Configure>", self._reposition_toolbar_2)
+        self.canvas_2.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 12))
 
         # ---- progress bar ----
         self.loading_container = tk.Frame(self.image_panel, bg=C["bg"], height=24)
@@ -1154,33 +1132,6 @@ class IndustrialDashboard:
         self.canvas_2.bind("<ButtonPress-1>",  self._on_pan_start_2)
         self.canvas_2.bind("<B1-Motion>",      self._on_pan_drag_2)
         self.canvas_2.bind("<MouseWheel>",     self._on_mouse_wheel_2)
-
-    # --------------------------------------------------------------
-    # Toolbar repositioning (called on canvas resize)
-    # --------------------------------------------------------------
-    def _reposition_toolbar_1(self, event):
-        """Place toolbar at top-right corner of canvas 1."""
-        # margin from top and right edges
-        margin_x = 5
-        margin_y = 5
-        # get toolbar width and height
-        self.toolbar_1.update_idletasks()
-        toolbar_w = self.toolbar_1.winfo_reqwidth()
-        toolbar_h = self.toolbar_1.winfo_reqheight()
-        x = event.width - toolbar_w - margin_x
-        y = margin_y
-        self.canvas_1.coords(self.toolbar_win_id_1, x, y)
-
-    def _reposition_toolbar_2(self, event):
-        """Place toolbar at top-right corner of canvas 2."""
-        margin_x = 5
-        margin_y = 5
-        self.toolbar_2.update_idletasks()
-        toolbar_w = self.toolbar_2.winfo_reqwidth()
-        toolbar_h = self.toolbar_2.winfo_reqheight()
-        x = event.width - toolbar_w - margin_x
-        y = margin_y
-        self.canvas_2.coords(self.toolbar_win_id_2, x, y)
 
     # --------------------------------------------------------------
     # Maximize / restore functions
@@ -1255,6 +1206,10 @@ class IndustrialDashboard:
 
     def start_video_stream(self):
         if self.camera1 is not None and self.camera2 is not None:
+            # Resume must not create a second independently scheduled feed loop.
+            if getattr(self, '_video_job', None) is not None:
+                self.root.after_cancel(self._video_job)
+                self._video_job = None
             self.video_streaming = True
             self.video_paused = False
             self.update_video_feed()
@@ -1294,6 +1249,7 @@ class IndustrialDashboard:
         self.root.after(50, finish)
 
     def update_video_feed(self):
+        self._video_job = None
         if not self.video_streaming:
             return
         cycle_started = time.perf_counter()
@@ -1368,14 +1324,15 @@ class IndustrialDashboard:
         )
         pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
 
-        if canvas_num == 1:
-            self.tk_image_1 = ImageTk.PhotoImage(pil_img)
-            canvas.delete("img")
-            canvas.create_image(cw // 2, ch // 2, image=self.tk_image_1, anchor=tk.CENTER, tags="img")
+        photo = ImageTk.PhotoImage(pil_img)
+        setattr(self, f"tk_image_{canvas_num}", photo)
+        items = canvas.find_withtag("img")
+        if items:
+            canvas.itemconfigure(items[0], image=photo)
+            canvas.coords(items[0], cw // 2, ch // 2)
         else:
-            self.tk_image_2 = ImageTk.PhotoImage(pil_img)
-            canvas.delete("img")
-            canvas.create_image(cw // 2, ch // 2, image=self.tk_image_2, anchor=tk.CENTER, tags="img")
+            canvas.create_image(cw // 2, ch // 2, image=photo, anchor=tk.CENTER, tags="img")
+        canvas.tag_lower("img")
 
     # ==============================================================
     # status / progress helpers

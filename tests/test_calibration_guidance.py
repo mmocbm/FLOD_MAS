@@ -148,6 +148,9 @@ class PerCaptureProcessingTests(unittest.TestCase):
 
     def test_live_preview_does_not_detect_board(self):
         app = calibration_ui.CalibrationApp.__new__(calibration_ui.CalibrationApp)
+        # Match defaults normally supplied by __init__.
+        app.check_panel_visible = False
+        app.check_preview_frozen = False
         app.closed = False
         app.processing_capture = False
         app.camera_running = True
@@ -162,6 +165,16 @@ class PerCaptureProcessingTests(unittest.TestCase):
         app.cap = MagicMock()
         app.cap.isOpened.return_value = True
         app.cap.read.return_value = True, np.zeros((900, 1200, 3), np.uint8)
+        app.video_label = MagicMock()
+        app.video_label.winfo_width.return_value = 800
+        app.video_label.winfo_height.return_value = 600
+        app._preview_executor = MagicMock()
+        app._preview_future = MagicMock()
+        app._preview_future.done.return_value = True
+        app._preview_future.result.return_value = (
+            app.cap, np.zeros((900, 1200, 3), np.uint8),
+            np.zeros((600, 800, 3), np.uint8),
+        )
 
         app.update_frame()
 

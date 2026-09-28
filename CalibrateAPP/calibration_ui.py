@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 
@@ -91,6 +92,10 @@ class CalibrationApp:
         self.camera_provider = camera_provider
         self.closed = False
         self.preview_job = None
+        self._preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='calibration-preview')
+        self._preview_future = None
+        self._scroll_job = None
+        self._scroll_remaining = 0.0
         self.starting_camera = False
         self.ui_style = configure_ttk(self.root)
         if host is None:
@@ -413,18 +418,44 @@ class CalibrationApp:
         self.controls_canvas.configure(scrollregion=self.controls_canvas.bbox("all"))
 
     def _resize_controls_content(self, event):
-        self.controls_canvas.itemconfigure(self._controls_window, width=event.width)
+        if getattr(self, '_controls_width', None) != event.width:
+            self._controls_width = event.width
+            self.controls_canvas.itemconfigure(self._controls_window, width=event.width)
 
     def _scroll_controls_with_mouse(self, event):
         """Scroll the setup controls only while the pointer is over that panel."""
         widget = self.root.winfo_containing(event.x_root, event.y_root)
         while widget is not None:
             if widget in (self.controls_canvas, self.controls_content):
-                direction = -1 if event.delta > 0 else 1
-                self.controls_canvas.yview_scroll(direction * 3, "units")
+                # Pixel-sized steps, including high-resolution wheel deltas.
+                delta = -event.delta / 120.0 * 60
+                if delta * self._scroll_remaining < 0:
+                    self._scroll_remaining = 0.0
+                self._scroll_remaining = max(-240, min(240, self._scroll_remaining + delta))
+                if self._scroll_job is None:
+                    self._advance_controls_scroll()
                 return "break"
             widget = getattr(widget, 'master', None)
         return None
+
+    def _advance_controls_scroll(self):
+        self._scroll_job = None
+        if self.closed:
+            return
+        remaining = self._scroll_remaining
+        step = remaining if abs(remaining) < 2 else remaining * 0.35
+        self._scroll_remaining -= step
+        bounds = self.controls_canvas.bbox(self._controls_window)
+        if bounds:
+            height = max(1, bounds[3] - bounds[1])
+            before = self.controls_canvas.yview()[0]
+            self.controls_canvas.yview_moveto(before + step / height)
+            if self.controls_canvas.yview()[0] == before:
+                self._scroll_remaining = 0.0
+        if abs(self._scroll_remaining) >= 0.5:
+            self._scroll_job = self.root.after(16, self._advance_controls_scroll)
+        else:
+            self._scroll_remaining = 0.0
 
     def _refresh_board_mode_ui(self):
         set_button_role(self.one_board_btn, "selected" if not self.use_two_boards else "secondary")
@@ -716,21 +747,50 @@ class CalibrationApp:
         # processed. Board detection never runs in the live preview.
         if (not self.processing_capture and self.camera_running and
                 self.cap is not None and self.cap.isOpened()):
-            ok, frame = self.cap.read()
-            if ok:
-                with self.frame_lock:
-                    self.current_frame = frame
-                scale = min(1.0, CONFIG['preview']['max_width'] / frame.shape[1],
-                            CONFIG['preview']['max_height'] / frame.shape[0])
-                display = cv2.resize(frame, (max(1, int(frame.shape[1] * scale)),
-                                             max(1, int(frame.shape[0] * scale))))
-                self._draw_coverage_guide(display)
-                self._draw_capture_history(display)
-                if not (self.check_panel_visible and self.check_preview_frozen):
-                    self._show_frame(display)
+            frozen = self.check_panel_visible and self.check_preview_frozen
+            future = self._preview_future
+            if future is not None and future.done():
+                self._preview_future = None
+                try:
+                    source, frame, display = future.result()
+                except Exception:
+                    source, frame, display = None, None, None
+                # Ignore work from a camera that was stopped or switched.
+                if source is self.cap and frame is not None:
+                    with self.frame_lock:
+                        self.current_frame = frame
+                    if not frozen and display is not None:
+                        self._draw_coverage_guide(display)
+                        self._draw_capture_history(display)
+                        self._show_frame(display)
+            if self._preview_future is None:
+                size = None if frozen else (
+                    max(2, self.video_label.winfo_width()),
+                    max(2, self.video_label.winfo_height()))
+                self._preview_future = self._preview_executor.submit(
+                    self._prepare_live_preview, self.cap, size)
+        elif self._preview_future is not None and self._preview_future.done():
+            # A capture/review owns the screen; don't replay an old preview later.
+            self._preview_future = None
         elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
-        delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
+        delay_ms = max(8, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
         self.preview_job = self.root.after(delay_ms, self.update_frame)
+
+    @staticmethod
+    def _prepare_live_preview(source, size):
+        """No Tk calls here. Keep the original frame for measurement/capture."""
+        ok, frame = source.read()
+        if not ok or frame is None:
+            return source, None, None
+        if size is None:
+            return source, frame, None
+        width = min(size[0], CONFIG['preview']['max_width'])
+        height = min(size[1], CONFIG['preview']['max_height'])
+        scale = min(1.0, width / frame.shape[1], height / frame.shape[0])
+        display = cv2.resize(frame, (max(1, int(frame.shape[1] * scale)),
+                                    max(1, int(frame.shape[0] * scale))),
+                             interpolation=cv2.INTER_LINEAR)
+        return source, frame, display
 
     def _recommended_cell(self):
         last_cell = None
@@ -865,9 +925,9 @@ class CalibrationApp:
         height = max(2, self.video_label.winfo_height())
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         image.thumbnail((width, height), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGB", (width, height), CANVAS_BG)
-        canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
-        photo = ImageTk.PhotoImage(canvas)
+        # The label centers the image on its own background. Avoid allocating
+        # and uploading a full viewport of black pixels on every camera frame.
+        photo = ImageTk.PhotoImage(image)
         self.video_label.image = photo
         self.video_label.configure(image=photo, text="")
 
@@ -1830,6 +1890,10 @@ class CalibrationApp:
             self._set_status("Please wait for the current step to finish before going back", AMBER)
             return False
         self.closed = True
+        if self._scroll_job is not None:
+            self.root.after_cancel(self._scroll_job)
+            self._scroll_job = None
+        self._preview_executor.shutdown(wait=False, cancel_futures=True)
         self._close_calibration_checks()
         if getattr(self, '_controls_wheel_binding', None):
             self.root.unbind("<MouseWheel>", self._controls_wheel_binding)
