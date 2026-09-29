@@ -358,18 +358,27 @@ class SaveGateTests(unittest.TestCase):
 
 
 class CheckRegionSelectorTests(unittest.TestCase):
-    """The check page's region selector, which is additive to the existing checks."""
+    """The shared check controls switch between global and region mappings."""
 
     def _check_page(self):
         from CalibrateAPP import calibration_ui
         page = calibration_ui.CalibrationCheckApp.__new__(
             calibration_ui.CalibrationCheckApp)
         page.region_check_index = 1
+        page.measurement_check_mode = "global"
+        page.preview_region_definition = None
+        page.check_preview_frozen = False
         page.processing_verification = False
+        page.global_check_mode_btn = MagicMock()
+        page.region_check_mode_btn = MagicMock()
+        page.region_selector_row = MagicMock()
         page.region_check_buttons = {1: MagicMock(), 2: MagicMock()}
         page.region_check_info = MagicMock()
         page._refresh_region_check_info = MagicMock()
         page._refresh_stage_ui = MagicMock()
+        page._hide_manual_measurement = MagicMock()
+        page._set_check_report = MagicMock()
+        page._set_mapping_preview_title = MagicMock()
         page._camera_number = MagicMock(return_value=1)
         page._check_region_crop = MagicMock(return_value=None)
         return page
@@ -397,6 +406,23 @@ class CheckRegionSelectorTests(unittest.TestCase):
         with patch.object(calibration_ui, "CONFIG",
                           {"region_homography": dict(SETTINGS, enabled=False)}):
             self.assertFalse(page._region_check_ready())
+
+    def test_region_mode_reuses_the_normal_check_controls(self):
+        from CalibrateAPP import calibration_ui
+        page = self._check_page()
+        with patch.object(calibration_ui, "CONFIG",
+                          {"region_homography": dict(SETTINGS)}):
+            page.select_measurement_check_mode("region")
+        self.assertEqual(page.measurement_check_mode, "region")
+        page._hide_manual_measurement.assert_called_once()
+        page._refresh_stage_ui.assert_called_once()
+
+    def test_measurement_button_routes_to_the_selected_region_mapping(self):
+        page = self._check_page()
+        page.measurement_check_mode = "region"
+        page._verify_region_measurement_accuracy = MagicMock()
+        page.verify_measurement_accuracy()
+        page._verify_region_measurement_accuracy.assert_called_once()
 
 
 class UnselectedCameraTests(unittest.TestCase):
@@ -436,6 +462,33 @@ class UnselectedCameraTests(unittest.TestCase):
         page._refresh_region_check_info()
         text = page.region_check_info.configure.call_args.kwargs["text"]
         self.assertIn("select a camera", text)
+
+
+class CheckLivePreviewTests(unittest.TestCase):
+    def test_region_mode_displays_only_the_deskewed_crop_but_keeps_the_raw_frame(self):
+        from CalibrateAPP import calibration_ui
+        page = calibration_ui.CalibrationCheckApp.__new__(
+            calibration_ui.CalibrationCheckApp)
+        page.measurement_check_mode = "region"
+        page.preview_region_definition = dict(MARKED)
+        page.camera_matrix = np.array([
+            [500.0, 0.0, 320.0],
+            [0.0, 500.0, 240.0],
+            [0.0, 0.0, 1.0],
+        ])
+        page.dist_coeffs = np.zeros(5)
+        page.calibration_image_size = (640, 480)
+        raw = np.zeros((480, 640, 3), np.uint8)
+        source = MagicMock()
+        source.read.return_value = True, raw
+
+        returned_source, current_frame, display = page._prepare_live_preview(
+            source, (800, 600))
+
+        self.assertIs(returned_source, source)
+        self.assertIs(current_frame, raw)
+        self.assertEqual(display.shape[1] // display.shape[0], 4)
+        self.assertLess(display.shape[0], 480)
 
 
 if __name__ == "__main__":

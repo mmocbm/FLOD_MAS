@@ -443,12 +443,24 @@ rig with exactly known truth, and prints the numbers rather than asserting them.
 
 ### Checking a region
 
-The calibration checks page gains a **Region homography** section alongside the
-existing lens and measurement-accuracy checks, which are unchanged. It captures a
-fresh image, maps the board's detected corners through the *saved* region
-homography, and reports measured against known distances in millimetres — graded
-against `maximum_rms_mm`. It also runs the same board through the global plane for
-comparison, so the two modes can be seen side by side.
+The calibration checks page has one shared **Measurement mapping** selector. Choose
+**Global plane**, or choose **Region based** and Region 01/02, before using the normal
+check controls. Both modes provide **Check lens calibration**, **Check measurement
+accuracy**, **Manual two-point measurement**, and **Resume live preview**; there is no
+separate region-homography check button.
+
+The live preview follows that selection. Global mode shows the full camera frame;
+region mode shows only the selected region's undistorted, deskewed crop. Switching
+between Region 01 and Region 02 changes the live crop immediately without reopening the
+camera.
+
+In region mode the fresh frame is undistorted first and the selected deskewed crop is
+used. The lens check evaluates the global lens model using the board profile saved with
+that region. The accuracy check maps freshly detected corners through the saved region
+homography and compares measured distances with the known printed geometry, graded
+against `maximum_rms_mm`. It also reports the global-plane result for comparison. Manual
+two-point measurement displays that same undistorted crop and converts both selected
+crop points through the region homography.
 
 ## Other settings
 

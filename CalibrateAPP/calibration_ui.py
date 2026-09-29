@@ -81,6 +81,9 @@ COVERAGE_COLUMNS = CONFIG['calibration']['coverage_grid_columns']
 CAMERA_IDS = [c['index'] for c in CONFIG['cameras']]
 SURFACE_SETUP_ENABLED = CONFIG['measurement_surface']['enabled']
 TWO_BOARD_DEFAULT = CONFIG['two_board']['enabled']
+CROP_RATIO = (float(CONFIG['crop_setup']['aspect_ratio'][0])
+              / float(CONFIG['crop_setup']['aspect_ratio'][1]))
+CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FILES_DIR = PROJECT_ROOT / "Files"
@@ -1927,7 +1930,12 @@ class CalibrationCheckApp(CalibrationApp):
                  on_open_setup=None):
         self.on_open_setup = on_open_setup
         self.check_square_length_mm = SQUARE_LENGTH_MM
+        self.measurement_check_mode = "global"
+        self.region_check_index = 1
+        self.preview_region_definition = None
         self.manual_measurement_active = False
+        self.manual_region_scale = None
+        self.manual_region_index = None
         self.manual_image_bgr = None
         self.manual_image_pil = None
         self.manual_points = []
@@ -2176,6 +2184,7 @@ class CalibrationCheckApp(CalibrationApp):
             bg=C["surface_2"], fg=MUTED, wraplength=370, justify=tk.LEFT,
             font=(FONT, 9),
         ).pack(anchor="w", padx=10, pady=(0, 7))
+        self._create_measurement_mode_controls(checks)
         self.check_lens_btn = themed_button(
             checks, "CHECK LENS CALIBRATION", self.verify_saved_calibration,
             role="blue", width=29, pady=9,
@@ -2211,8 +2220,6 @@ class CalibrationCheckApp(CalibrationApp):
             manual_actions, "RESET POINTS", self.reset_manual_points,
             role="quiet", width=13, pady=6,
         ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
-
-        self._create_region_check_section(checks)
 
         self.check_report = scrolledtext.ScrolledText(
             controls, height=9, bg=TITLE_BG, fg=C["text_soft"],
@@ -2251,25 +2258,33 @@ class CalibrationCheckApp(CalibrationApp):
         super()._refresh_check_panel_buttons()
         if not hasattr(self, 'manual_measurement_btn'):
             return
-        ready = (
+        lens_ready = (
             self.camera_index is not None and self.camera_running
             and self.camera_matrix is not None and self.dist_coeffs is not None
-            and self._extrinsics_path().is_file()
             and not self.processing_verification
         )
+        if getattr(self, 'measurement_check_mode', 'global') == "region":
+            region_ready = lens_ready and self._region_check_ready()
+            self.check_lens_btn.configure(
+                state=tk.NORMAL if region_ready else tk.DISABLED)
+            self.check_measurement_btn.configure(
+                state=tk.NORMAL if region_ready else tk.DISABLED)
+            self.check_plane_info.configure(
+                text=(f"Region 0{self.region_check_index} local mapping selected. "
+                      "All millimetre tools use its saved homography."),
+                fg=C["text_soft"] if region_ready else AMBER,
+            )
+            ready = region_ready
+        else:
+            ready = lens_ready and self._extrinsics_path().is_file()
+            self.check_lens_btn.configure(
+                state=tk.NORMAL if lens_ready else tk.DISABLED)
+            self.check_measurement_btn.configure(
+                state=tk.NORMAL if ready else tk.DISABLED)
         self.manual_measurement_btn.configure(
             state=tk.NORMAL if ready else tk.DISABLED,
         )
-        if hasattr(self, 'region_check_btn'):
-            # The region check needs a saved local homography for the selected region and
-            # the crop region it was fitted on, so it is gated more tightly than the
-            # others -- but it borrows the same live camera and intrinsics.
-            self.region_check_btn.configure(
-                state=tk.NORMAL if (ready and self._region_check_ready())
-                else tk.DISABLED,
-            )
-            # The section describes one camera's region, so it has to be re-read whenever
-            # the selected camera changes, not only when a region button is pressed.
+        if hasattr(self, 'region_check_info'):
             self._refresh_region_check_info()
 
     def _load_saved_intrinsics(self):
@@ -2391,6 +2406,7 @@ class CalibrationCheckApp(CalibrationApp):
         if self.camera_running:
             self.stop_camera()
         self.camera_index = index
+        self.preview_region_definition = self._check_region_crop()
         self.stage = "select"
         self.current_frame = None
         self.camera_matrix = None
@@ -2401,6 +2417,48 @@ class CalibrationCheckApp(CalibrationApp):
         self._set_status(f"Camera {index} selected — start the live feed")
         self.log(f"Selected Camera {index} for calibration checks")
         self._refresh_stage_ui()
+
+    def _prepare_live_preview(self, source, size):
+        """Keep raw frames for checks, but display only the selected region in region mode."""
+        ok, raw = source.read()
+        if not ok or raw is None:
+            return source, None, None
+        if size is None:
+            return source, raw, None
+
+        display_source = raw
+        if getattr(self, 'measurement_check_mode', 'global') == "region":
+            definition = self.preview_region_definition
+            matrix = self.camera_matrix
+            distortion = self.dist_coeffs
+            calibration_size = self.calibration_image_size
+            if (definition is not None and matrix is not None and distortion is not None
+                    and calibration_size is not None):
+                try:
+                    frame_size = (raw.shape[1], raw.shape[0])
+                    scaled_matrix = scale_camera_matrix(
+                        np.asarray(matrix, np.float64), calibration_size, frame_size)
+                    undistorted = cv2.undistort(
+                        raw, scaled_matrix, np.asarray(distortion, np.float64),
+                        None, scaled_matrix,
+                    )
+                    display_source = extract_rotated_crop(
+                        undistorted, definition, CROP_OUTPUT_SIZE, CROP_RATIO)
+                except (cv2.error, ValueError, TypeError, KeyError, IndexError):
+                    display_source = raw
+
+        width = min(size[0], CONFIG['preview']['max_width'])
+        height = min(size[1], CONFIG['preview']['max_height'])
+        scale = min(1.0, width / display_source.shape[1],
+                    height / display_source.shape[0])
+        display = cv2.resize(
+            display_source,
+            (max(1, int(display_source.shape[1] * scale)),
+             max(1, int(display_source.shape[0] * scale))),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        # Workers still need the untouched camera frame and apply undistortion once.
+        return source, raw, display
 
     def stop_camera(self):
         self._hide_manual_measurement()
@@ -2420,6 +2478,7 @@ class CalibrationCheckApp(CalibrationApp):
             self.log(f"Calibration checks unavailable: {error}")
         else:
             self._set_status("Live preview ready — position the ChArUco board", GREEN)
+            self._set_mapping_preview_title()
             self.log(
                 f"Camera {self.camera_index} ready for "
                 f"{'two-board' if self.use_two_boards else 'one-board'} checks"
@@ -2453,9 +2512,17 @@ class CalibrationCheckApp(CalibrationApp):
             return
         calibration_path = self._calibration_path()
         extrinsics_path = self._extrinsics_path()
-        if not calibration_path.is_file() or not extrinsics_path.is_file():
+        region_mode = getattr(self, 'measurement_check_mode', 'global') == "region"
+        if not calibration_path.is_file() or (not region_mode and not extrinsics_path.is_file()):
             self._set_check_report(
-                "Manual measurement requires saved lens and measurement-surface calibration."
+                "Manual measurement requires the saved calibration for the selected "
+                "measurement mapping."
+            )
+            return
+        if region_mode and not self._region_check_ready():
+            self._set_check_report(
+                "The selected region has no usable saved homography. Calibrate that "
+                "region before using manual measurement."
             )
             return
         with self.frame_lock:
@@ -2465,10 +2532,40 @@ class CalibrationCheckApp(CalibrationApp):
         self._set_check_preview_title("●  PREPARING UNDISTORTED CAPTURE", AMBER)
         self._set_status("Preparing manual measurement image…", AMBER)
         self._refresh_stage_ui()
-        threading.Thread(
-            target=self._prepare_manual_measurement_worker,
-            args=(frame, calibration_path, extrinsics_path), daemon=True,
-        ).start()
+        if region_mode:
+            target = self._prepare_region_manual_measurement_worker
+            args = (frame, calibration_path)
+        else:
+            target = self._prepare_manual_measurement_worker
+            args = (frame, calibration_path, extrinsics_path)
+        threading.Thread(target=target, args=args, daemon=True).start()
+
+    def _prepare_region_manual_measurement_worker(self, frame, calibration_path):
+        try:
+            calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+            frame_size = (frame.shape[1], frame.shape[0])
+            camera_matrix = scale_camera_matrix(
+                np.asarray(calibration["camera_matrix"], dtype=np.float64),
+                tuple(calibration["image_size"]), frame_size,
+            )
+            undistorted = cv2.undistort(
+                frame, camera_matrix,
+                np.asarray(calibration["dist_coeffs"], dtype=np.float64),
+                None, camera_matrix,
+            )
+            definition = self._check_region_crop()
+            scale = region_calibration.load_region_scale(
+                self._camera_number(), self.region_check_index, definition, frame_size,
+                CROP_OUTPUT_SIZE, CROP_RATIO,
+            )
+            crop = extract_rotated_crop(
+                undistorted, definition, CROP_OUTPUT_SIZE, CROP_RATIO)
+            self.root.after(
+                0, self._manual_region_measurement_ready,
+                crop, scale, self.region_check_index,
+            )
+        except Exception as error:
+            self.root.after(0, self._manual_measurement_failed, str(error))
 
     def _prepare_manual_measurement_worker(self, frame, calibration_path, extrinsics_path):
         try:
@@ -2494,6 +2591,8 @@ class CalibrationCheckApp(CalibrationApp):
 
     def _manual_measurement_ready(self, image, camera_matrix, rvec, tvec):
         self.processing_verification = False
+        self.manual_region_scale = None
+        self.manual_region_index = None
         self.manual_measurement_active = True
         self.manual_image_bgr = image
         self.manual_image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -2514,6 +2613,33 @@ class CalibrationCheckApp(CalibrationApp):
             "Right-drag or middle-drag: pan\n\n"
             "The captured image is undistorted. The saved measurement-plane "
             "calibration is used directly; no additional thickness adjustment is applied."
+        )
+        self._refresh_stage_ui()
+        self.root.after_idle(self._reset_manual_view)
+
+    def _manual_region_measurement_ready(self, image, scale, region_index):
+        self.processing_verification = False
+        self.manual_region_scale = scale
+        self.manual_region_index = region_index
+        self.manual_measurement_active = True
+        self.manual_image_bgr = image
+        self.manual_image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        self.manual_points = []
+        self.manual_distance_mm = None
+        self.video_label.place_forget()
+        self.manual_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.manual_canvas.lift()
+        self._set_check_preview_title(
+            f"●  REGION 0{region_index} TWO-POINT MEASUREMENT", PURPLE)
+        self._set_status(
+            f"Select Point 1 and Point 2 inside Region 0{region_index}", GREEN)
+        self._set_check_report(
+            f"REGION 0{region_index} MANUAL TWO-POINT MEASUREMENT\n\n"
+            "Left-click: select Point 1 and Point 2\n"
+            "Mouse wheel: zoom at cursor\n"
+            "Right-drag or middle-drag: pan\n\n"
+            "The displayed image is the undistorted, deskewed crop. The selected "
+            "region homography converts both crop points to millimetres."
         )
         self._refresh_stage_ui()
         self.root.after_idle(self._reset_manual_view)
@@ -2684,6 +2810,8 @@ class CalibrationCheckApp(CalibrationApp):
         return "break"
 
     def _manual_pixels_to_plane_mm(self, points):
+        if self.manual_region_scale is not None:
+            return self.manual_region_scale.to_mm(points)
         inverse_camera = np.linalg.inv(self.manual_camera_matrix)
         rotation, _ = cv2.Rodrigues(self.manual_plane_rvec)
         normal = rotation[:, 2]
@@ -2719,8 +2847,10 @@ class CalibrationCheckApp(CalibrationApp):
             f"Point 2:       ({p2[0]:.2f}, {p2[1]:.2f}) px\n"
             f"Pixel distance: {pixel_distance:.3f} px\n"
             f"Linear distance: {self.manual_distance_mm:.3f} mm\n\n"
-            "Saved measurement-plane calibration used directly. "
-            "No additional board-thickness adjustment was applied."
+            + (f"Region 0{self.manual_region_index} homography used directly."
+               if self.manual_region_scale is not None else
+               "Saved measurement-plane calibration used directly. "
+               "No additional board-thickness adjustment was applied.")
         )
 
     def undo_manual_point(self):
@@ -2749,6 +2879,8 @@ class CalibrationCheckApp(CalibrationApp):
         if hasattr(self, 'video_label'):
             self.video_label.place(x=0, y=0, relwidth=1, relheight=1)
         self.manual_measurement_active = False
+        self.manual_region_scale = None
+        self.manual_region_index = None
         self.manual_image_bgr = None
         self.manual_image_pil = None
         self.manual_points = []
@@ -2757,14 +2889,28 @@ class CalibrationCheckApp(CalibrationApp):
     def resume_check_preview(self):
         self._hide_manual_measurement()
         super().resume_check_preview()
+        self._set_mapping_preview_title()
+
+    def _set_mapping_preview_title(self):
+        if getattr(self, 'measurement_check_mode', 'global') == "region":
+            self._set_check_preview_title(
+                f"●  LIVE REGION 0{self.region_check_index} PREVIEW", GREEN)
+        else:
+            self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
 
     def verify_saved_calibration(self):
         self._hide_manual_measurement()
-        super().verify_saved_calibration()
+        if getattr(self, 'measurement_check_mode', 'global') == "region":
+            self._verify_region_lens_calibration()
+        else:
+            super().verify_saved_calibration()
 
     def verify_measurement_accuracy(self):
         self._hide_manual_measurement()
-        super().verify_measurement_accuracy()
+        if getattr(self, 'measurement_check_mode', 'global') == "region":
+            self._verify_region_measurement_accuracy()
+        else:
+            super().verify_measurement_accuracy()
 
     def _show_check_frame(self, frame):
         self._hide_manual_measurement()
@@ -2775,56 +2921,141 @@ class CalibrationCheckApp(CalibrationApp):
         self.check_preview_frozen = False
         self._set_check_preview_title("CAMERA PREVIEW", C["text_soft"])
 
-    # -- optional: per-region homography check ------------------------------------------
-    #
-    # A separate check, beside the existing ones rather than instead of them. The saved
-    # lens check and the measurement-accuracy check both grade the *global* model: one
-    # asks how well the lens projects, the other how well the plane converts pixels to
-    # millimetres anywhere on the bed. This one asks a narrower question -- does the local
-    # homography that will actually be used for a region still reproduce the board's
-    # printed geometry, and does it agree with what the global plane says about the same
-    # points. Both can be true while this is false, and vice versa, which is why it is
-    # worth a check of its own.
-
-    def _create_region_check_section(self, parent):
-        region_settings = CONFIG.get('region_homography', {})
-        section = tk.Frame(
-            parent, bg=C["surface_2"], highlightbackground=C["border_strong"],
-            highlightthickness=1,
-        )
-        section.pack(fill=tk.X, padx=10, pady=(0, 8))
-        self.region_check_index = 1
-        self.region_check_btn = themed_button(
-            section, "CHECK REGION HOMOGRAPHY", self.verify_region_homography,
-            role="secondary", width=29, pady=9, state=tk.DISABLED,
-        )
-        if not region_settings.get('enabled', False):
-            # Shown, but inert and self-explanatory: the mode is opt-in, and an operator
-            # should be able to see that the check exists without having to guess why the
-            # button does nothing.
-            section_label(section, "4  Region homography (mode is off)").pack(
-                anchor="w", padx=10, pady=(9, 3),
-            )
-            tk.Label(
-                section,
-                text=("Enable region_homography in config.json and save a local "
-                      "homography per region to use this check."),
-                bg=C["surface_2"], fg=MUTED, wraplength=370, justify=tk.LEFT,
-                font=(FONT, 9),
-            ).pack(anchor="w", padx=10, pady=(0, 8))
+    def _verify_region_lens_calibration(self):
+        """Evaluate the global lens model using the board saved for this region."""
+        if (self.current_frame is None or self.processing_capture
+                or self.processing_verification):
             return
-        section_label(section, "4  Region homography").pack(
-            anchor="w", padx=10, pady=(9, 3),
+        if not self._region_check_ready():
+            self._set_check_report(
+                "The selected region has no saved local homography, or its crop has "
+                "changed. Calibrate the region first."
+            )
+            return
+        with self.frame_lock:
+            frame = self.current_frame.copy()
+        self.processing_verification = True
+        self.check_preview_frozen = True
+        self._set_check_preview_title(
+            f"●  CAPTURED REGION 0{self.region_check_index} LENS FRAME", AMBER)
+        self._set_status("Checking lens calibration in the selected region…", AMBER)
+        self._set_check_report(
+            "Undistorting the fresh frame and evaluating the saved lens model using "
+            "the region board…"
+        )
+        self._refresh_stage_ui()
+        threading.Thread(
+            target=self._region_lens_worker, args=(frame,), daemon=True,
+        ).start()
+
+    def _region_lens_worker(self, frame):
+        try:
+            settings = CONFIG['region_homography']
+            frame_size = (frame.shape[1], frame.shape[0])
+            camera_matrix = scale_camera_matrix(
+                np.asarray(self.camera_matrix, np.float64),
+                self.calibration_image_size, frame_size,
+            )
+            undistorted = cv2.undistort(
+                frame, camera_matrix, np.asarray(self.dist_coeffs, np.float64),
+                None, camera_matrix,
+            )
+            definition = self._check_region_crop()
+            store = region_calibration.load_region_store(
+                project_path(settings['store_file']))
+            entry = region_calibration.stored_region_entry(
+                store, self._camera_number(), self.region_check_index)
+            if entry is None:
+                raise region_calibration.RegionCalibrationError(
+                    f"Region {self.region_check_index} has no saved local homography")
+            board = region_calibration.BoardDefinition.from_dict(entry['board'])
+            # Validate the crop/intrinsic signature before reporting against this entry.
+            region_calibration.load_region_scale(
+                self._camera_number(), self.region_check_index, definition, frame_size,
+                CROP_OUTPUT_SIZE, CROP_RATIO,
+            )
+            detection = region_calibration.detect_board_in_region(
+                cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY),
+                board, definition, frame_size, CROP_OUTPUT_SIZE, CROP_RATIO,
+                int(settings.get('minimum_corners', 8)),
+            )
+            metrics = region_calibration.evaluate_intrinsics(
+                detection, board, camera_matrix)
+            crop = extract_rotated_crop(
+                undistorted, definition, CROP_OUTPUT_SIZE, CROP_RATIO)
+            for point in detection.crop_points:
+                cv2.drawMarker(
+                    crop, (int(round(point[0])), int(round(point[1]))),
+                    self._hex_to_bgr(GREEN), cv2.MARKER_CROSS, 16, 2,
+                )
+            is_ok = metrics.rms_px <= MAX_VERIFICATION_RMS_PX
+            self.root.after(
+                0, self._region_lens_complete, crop, metrics, board,
+                self.region_check_index, is_ok,
+            )
+        except Exception as error:
+            self.root.after(0, self._verification_failed, str(error))
+
+    def _region_lens_complete(self, annotated, metrics, board, region_index, is_ok):
+        self.processing_verification = False
+        self._set_check_preview_title(
+            f"●  REGION 0{region_index} LENS-CHECK RESULT", PURPLE)
+        self._show_check_frame(annotated)
+        result = "CALIBRATION OK" if is_ok else "RECALIBRATION RECOMMENDED"
+        self._set_status(
+            f"{result} — Region {region_index} RMS {metrics.rms_px:.2f} px",
+            GREEN if is_ok else RED,
+        )
+        self._set_check_report(
+            f"REGION 0{region_index} LENS CALIBRATION CHECK\n"
+            f"Board definition:        {board.describe()}\n"
+            f"Detected board points:   {metrics.corners}\n"
+            f"Reprojection RMS:        {metrics.rms_px:.3f} px\n"
+            f"Mean reprojection error: {metrics.mean_px:.3f} px\n"
+            f"Maximum error:           {metrics.max_px:.3f} px\n\n"
+            "This checks the global lens model locally in the selected region. "
+            "Use CHECK MEASUREMENT ACCURACY to validate its saved homography."
+        )
+        self.log(
+            f"Region {region_index} lens calibration checked: RMS "
+            f"{metrics.rms_px:.3f} px over {metrics.corners} points."
+        )
+        self._refresh_stage_ui()
+
+    # -- global-plane / per-region verification mode ------------------------------------
+
+    def _create_measurement_mode_controls(self, parent):
+        """Choose the mapping used by every check instead of exposing a separate check."""
+        region_settings = CONFIG.get('region_homography', {})
+        section_label(parent, "Measurement mapping").pack(
+            anchor="w", padx=10, pady=(0, 3),
         )
         tk.Label(
-            section,
-            text=("Lay the same board flat inside the region and capture. The saved "
-                  "local homography is graded against the board's printed geometry, and "
-                  "against the global measurement plane."),
+            parent,
+            text=("Choose which saved mapping the fresh capture, accuracy check and "
+                  "manual two-point measurement will use."),
             bg=C["surface_2"], fg=MUTED, wraplength=370, justify=tk.LEFT,
             font=(FONT, 9),
         ).pack(anchor="w", padx=10, pady=(0, 7))
-        region_row = tk.Frame(section, bg=C["surface_2"])
+
+        mode_row = tk.Frame(parent, bg=C["surface_2"])
+        mode_row.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.global_check_mode_btn = themed_button(
+            mode_row, "GLOBAL PLANE", lambda: self.select_measurement_check_mode("global"),
+            role="selected", width=13, pady=6,
+        )
+        self.global_check_mode_btn.pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
+        self.region_check_mode_btn = themed_button(
+            mode_row, "REGION BASED", lambda: self.select_measurement_check_mode("region"),
+            role="secondary", width=13, pady=6,
+            state=(tk.NORMAL if region_settings.get('enabled', False) else tk.DISABLED),
+        )
+        self.region_check_mode_btn.pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
+
+        region_row = tk.Frame(parent, bg=C["surface_2"])
+        self.region_selector_row = region_row
         region_row.pack(fill=tk.X, padx=10, pady=(0, 6))
         self.region_check_buttons = {}
         for index in (1, 2):
@@ -2837,22 +3068,60 @@ class CalibrationCheckApp(CalibrationApp):
             button.pack(side=tk.LEFT, expand=True, fill=tk.X,
                         padx=(0, 3) if index == 1 else (3, 0))
             self.region_check_buttons[index] = button
-        self.region_check_btn.pack(fill=tk.X, padx=10, pady=(0, 6))
         self.region_check_info = tk.Label(
-            section, text="", bg=TITLE_BG, fg=C["text_soft"], justify=tk.LEFT,
+            parent, text="", bg=TITLE_BG, fg=C["text_soft"], justify=tk.LEFT,
             wraplength=370, font=(FONT, 9), padx=9, pady=6,
         )
         self.region_check_info.pack(fill=tk.X, padx=10, pady=(0, 8))
+        region_row.pack_forget()
         self._refresh_region_check_info()
+
+    def select_measurement_check_mode(self, mode):
+        if self.processing_verification or mode not in ("global", "region"):
+            return
+        if mode == "region" and not CONFIG.get('region_homography', {}).get('enabled', False):
+            self._set_check_report(
+                "Region-based checking is disabled in config.json.")
+            return
+        self._hide_manual_measurement()
+        self.measurement_check_mode = mode
+        self.preview_region_definition = (
+            self._check_region_crop() if mode == "region" else None)
+        self.check_preview_frozen = False
+        set_button_role(self.global_check_mode_btn,
+                        "selected" if mode == "global" else "secondary")
+        set_button_role(self.region_check_mode_btn,
+                        "selected" if mode == "region" else "secondary")
+        if mode == "region":
+            self.region_selector_row.pack(
+                fill=tk.X, padx=10, pady=(0, 6), before=self.region_check_info)
+            self._set_check_report(
+                f"Region-based mode selected for Region 0{self.region_check_index}. "
+                "All checks use its saved local homography and saved board profile.")
+        else:
+            self.region_selector_row.pack_forget()
+            self._set_check_report(
+                "Global-plane mode selected. Measurement checks and manual points use "
+                "the saved camera measurement surface.")
+        self._refresh_region_check_info()
+        self._set_mapping_preview_title()
+        self._refresh_stage_ui()
 
     def select_check_region(self, region_index):
         if self.processing_verification:
             return
         self.region_check_index = region_index
+        self.preview_region_definition = self._check_region_crop(region_index)
+        self.check_preview_frozen = False
         for index, button in self.region_check_buttons.items():
             set_button_role(button,
                             "selected" if index == region_index else "secondary")
         self._refresh_region_check_info()
+        if getattr(self, 'measurement_check_mode', 'global') == "region":
+            self._set_check_report(
+                f"Region-based mode selected for Region 0{region_index}. Place that "
+                "region's saved ChArUco board flat inside the crop before checking.")
+            self._set_mapping_preview_title()
         self._refresh_stage_ui()
 
     def _camera_number(self):
@@ -2915,6 +3184,10 @@ class CalibrationCheckApp(CalibrationApp):
             self.region_check_info.configure(
                 text=f"{label}: select a camera to check a region.")
             return
+        if getattr(self, 'measurement_check_mode', 'global') == "global":
+            self.region_check_info.configure(
+                text="GLOBAL PLANE: saved measurement-surface mapping selected.")
+            return
         if self._check_region_crop() is None:
             self.region_check_info.configure(
                 text=f"{label}: no crop region is marked for this camera.")
@@ -2937,8 +3210,8 @@ class CalibrationCheckApp(CalibrationApp):
                   f"over {metrics.get('corners', 0)} corners, fitted to "
                   f"{(entry.get('board') or {}).get('name', 'a board')}"))
 
-    def verify_region_homography(self):
-        """Re-measure the region board's printed spans through the saved local homography."""
+    def _verify_region_measurement_accuracy(self):
+        """Run measurement accuracy through the selected saved local homography."""
         if (self.current_frame is None or self.processing_capture
                 or self.processing_verification):
             return
@@ -2956,15 +3229,14 @@ class CalibrationCheckApp(CalibrationApp):
             f"●  CAPTURED REGION 0{self.region_check_index} FRAME", AMBER)
         self._set_status("Checking the saved region homography…", AMBER)
         self._set_check_report(
-            "Undistorting the frame, detecting the board and measuring through the "
-            "saved local homography…"
+            "Running region-based measurement accuracy from a fresh capture…"
         )
         self._refresh_stage_ui()
         threading.Thread(
-            target=self._region_homography_worker, args=(frame,), daemon=True,
+            target=self._region_measurement_accuracy_worker, args=(frame,), daemon=True,
         ).start()
 
-    def _region_homography_worker(self, frame):
+    def _region_measurement_accuracy_worker(self, frame):
         try:
             settings = CONFIG['region_homography']
             region_index = self.region_check_index
@@ -3030,12 +3302,12 @@ class CalibrationCheckApp(CalibrationApp):
             annotated = self._annotate_region_check(undistorted, detection, scale,
                                                     definition, summary)
             self.root.after(
-                0, self._region_homography_complete,
+                0, self._region_measurement_accuracy_complete,
                 annotated, summary, plane_summary, plane_note, board, entry,
                 region_index, detection,
             )
         except Exception as error:
-            self.root.after(0, self._region_homography_failed, str(error))
+            self.root.after(0, self._region_measurement_accuracy_failed, str(error))
 
     def _annotate_region_check(self, frame, detection, scale, definition, summary):
         """The deskewed crop with the detected corners and the fitted geometry on it."""
@@ -3072,8 +3344,9 @@ class CalibrationCheckApp(CalibrationApp):
         )
         return crop
 
-    def _region_homography_complete(self, annotated, summary, plane_summary, plane_note,
-                                    board, entry, region_index, detection):
+    def _region_measurement_accuracy_complete(
+            self, annotated, summary, plane_summary, plane_note,
+            board, entry, region_index, detection):
         self.processing_verification = False
         self._set_check_preview_title(
             f"●  REGION 0{region_index} HOMOGRAPHY RESULT", PURPLE)
@@ -3082,7 +3355,8 @@ class CalibrationCheckApp(CalibrationApp):
         limit = float(CONFIG['region_homography'].get('maximum_rms_mm', 0.5))
         passed = overall['rmse_mm'] <= limit
         lines = [
-            f"REGION 0{region_index} LOCAL HOMOGRAPHY CHECK",
+            f"REGION 0{region_index} MEASUREMENT ACCURACY CHECK",
+            "Measurement mapping: saved local region homography",
             f"Board: {board.describe()}",
             f"Corners detected: {detection.corner_count} "
             f"({detection.outside_region} outside the crop raster)",
@@ -3115,24 +3389,25 @@ class CalibrationCheckApp(CalibrationApp):
         )
         self._set_check_report("\n".join(lines))
         self._set_status(
-            f"Region {region_index} check complete — RMSE "
+            f"Region {region_index} measurement check complete — RMSE "
             f"{overall['rmse_mm']:.3f} mm ({'PASS' if passed else 'FAIL'})",
             GREEN if passed else RED,
         )
         self.log(
-            f"Region {region_index} homography checked: {overall['count']} printed "
+            f"Region {region_index} measurement accuracy checked: "
+            f"{overall['count']} printed "
             f"spans, RMSE {overall['rmse_mm']:.4f} mm, maximum "
             f"{overall['maximum_absolute_error_mm']:.4f} mm, limit {limit:.3f} mm."
         )
         self._refresh_stage_ui()
 
-    def _region_homography_failed(self, error):
+    def _region_measurement_accuracy_failed(self, error):
         self.processing_verification = False
         self.check_preview_frozen = False
         self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
-        self._set_check_report(f"Region homography check failed.\n\n{error}")
-        self._set_status("The region homography could not be checked", RED)
-        self.log(f"Region homography check failed: {error}")
+        self._set_check_report(f"Region measurement accuracy check failed.\n\n{error}")
+        self._set_status("Region measurement accuracy could not be checked", RED)
+        self.log(f"Region measurement accuracy check failed: {error}")
         self._refresh_stage_ui()
 
     def open_calibration_checks(self):
