@@ -55,8 +55,11 @@ coordinates back to the full-resolution captured image.
 
 ## Manual crop setup
 
-`crop_setup` configures the two independent model-input regions used for each
-camera. Crop definitions are stored in `Files/crop_regions.json` by default.
+`crop_setup` configures two independent model-input regions per camera and per
+garment size—four saved regions for every size. Crop definitions are stored in
+`Files/crop_regions.json` by default. A legacy single set is automatically kept
+as the `M` profile. The configured sizes are `XXS`, `XS`, `S`, `M`, `L`, `XL`,
+`2XL`, `3XL`, and `4XL`.
 
 `aspect_ratio` selects the shape of a crop and `output_size` the resolution it is
 resized to. They default to `[4, 1]` and `[2208, 552]`, and **must describe the same
@@ -65,15 +68,17 @@ loudly, it would stretch every crop by a small amount. The app rejects a
 configuration where the two disagree and names both values.
 
 `margin_percent` grows the marked region on all four sides, so the fabric never sits
-flush against the crop edge. It is a percentage of the marked size: `8` adds 8% of
-the marked width to each side horizontally and 8% of the marked height vertically.
-The default is `8`. The margin is applied when the region is marked, so it is baked
+flush against the crop edge. It is a percentage of the marked size: `10` adds 10% of
+the marked width to each side horizontally and 10% of the marked height vertically.
+The current configuration is `10`. The margin is applied when the region is marked, so it is baked
 into the saved crop — see the note on adjusting it below.
 
 ### Marking a region
 
-In **Crop Setup**, select a camera and Crop 1 or Crop 2, then press **Capture** to
-freeze and undistort one frame.
+In **Crop Setup**, first select the garment size, then select a camera and Crop 1
+or Crop 2. Press **Capture** to freeze and undistort one frame. Repeat for both
+crops on both cameras. During inspection, the saved four-region set matching the
+size selected in Settings is loaded automatically.
 
 Press **Mark 4 Points** and click the four corners in order around the region:
 
@@ -177,17 +182,17 @@ single factor, because a pixel is **not** a fixed number of millimetres across a
 projected crop. The `mm_per_pixel` figure is a summary at the crop centre, not a
 constant.
 
-The overlay then shows a label such as `S3 3.10mm`. The JSON keeps the pixel figures alongside the
+The overlay then shows a label such as `3.10mm`. The JSON keeps the pixel figures alongside the
 millimetre ones: they are what the scale was applied to, so they make a
 millimetre value auditable and let it be recomputed if a calibration changes.
 
 The Settings page supplies `inspection.strip_width_mm` (default `4.0`) and
 `inspection.strip_width_tolerance_mm` (default `1.0`). Each segment's average width
-is checked inclusively against `target ± tolerance`. A passing segment is shaded and
-labelled green; a failing segment is shaded and labelled red. Labels contain only the
-segment number, measured width in millimetres and `OK`/`FAIL`, for example
-`S3 4.10mm OK`. When no millimetre calibration is available, the overlay reports
-pixels with `NO MM` and does not claim a tolerance result.
+is checked inclusively against `target ± tolerance`. A passing segment is shaded
+green and a failing segment is shaded red. The label contains only its measured
+width, for example `4.10mm`; the colour carries the tolerance result. When no
+millimetre calibration is available, width labels are omitted and the dashboard
+reports a warning instead of claiming a tolerance result.
 
 After detection finishes, the dashboard automatically shows Crop 1 for
 `inspection.result_display_seconds` (default `5.0` seconds), then Crop 2 for the

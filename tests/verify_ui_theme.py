@@ -57,6 +57,8 @@ def run():
 
         app.open_crop_setup_window()
         root.update()
+        for size_button in app.crop_size_buttons.values():
+            visible_inside(size_button, app.crop_win)
         assert app.crop_canvas.winfo_width() > 800
         assert app.crop_canvas.winfo_height() > 400
         app.crop_setup_active = False

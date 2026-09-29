@@ -443,12 +443,10 @@ def _place_label(segment: Segment, shape: tuple[int, ...]) -> tuple[int, int, in
 
 
 def _label_text(segment: Segment) -> str:
-    """The width shown beside a segment: millimetres when known, else pixels."""
+    """Show only the measured metric width; colour carries the grade."""
     if segment.average_width_mm is not None:
-        status = (" OK" if segment.within_tolerance is True else
-                  " FAIL" if segment.within_tolerance is False else "")
-        return f"S{segment.index} {segment.average_width_mm:.2f}mm{status}"
-    return f"S{segment.index} {segment.average_width_px:.1f}px NO MM"
+        return f"{segment.average_width_mm:.2f}mm"
+    return ""
 
 
 def _segment_color(segment: Segment) -> tuple[int, int, int]:
@@ -509,6 +507,8 @@ def draw_strip_analysis(canvas: np.ndarray, analysis: StripAnalysis) -> np.ndarr
         cv2.line(canvas, start, end, TICK_COLOR, 1, cv2.LINE_AA)
 
     for segment in analysis.segments:
+        if segment.average_width_mm is None:
+            continue
         left, top, box_w, box_h = _place_label(segment, canvas.shape)
         cv2.rectangle(canvas, (left, top), (left + box_w, top + box_h),
                       (_segment_color(segment) if segment.within_tolerance is not None

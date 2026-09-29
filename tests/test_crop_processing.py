@@ -6,8 +6,9 @@ import cv2
 import numpy as np
 
 from crop_processing import (
-    crop_edit_from_saved, definition_fits_image, extract_rotated_crop, four_point_crop,
-    load_crop_store, normalized_definition, parallel_line_angle, pixel_definition,
+    crop_cameras_for_size, crop_edit_from_saved, definition_fits_image,
+    extract_rotated_crop, four_point_crop, load_crop_store,
+    normalized_definition, parallel_line_angle, pixel_definition,
     rotated_crop_transform, save_crop_store,
 )
 
@@ -243,18 +244,32 @@ class CropProcessingTests(unittest.TestCase):
         crop = extract_rotated_crop(image, definition, (2208, 552))
         self.assertEqual(crop.shape[:2], (552, 2208))
 
-    def test_store_round_trip_keeps_two_crops_per_camera(self):
+    def test_store_round_trip_keeps_four_crops_for_every_size(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "crops.json"
-            data = {"version": 1, "cameras": {"1": [{"x": 1}, None], "2": [None, {"x": 2}]}}
+            data = {"version": 2, "sizes": {
+                "M": {"1": [{"x": 1}, None], "2": [None, {"x": 2}]},
+                "XL": {"1": [None, {"x": 3}], "2": [None, None]},
+            }}
             save_crop_store(path, data)
             self.assertEqual(load_crop_store(path), data)
+
+    def test_legacy_crops_are_migrated_to_medium(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "crops.json"
+            path.write_text(
+                '{"version": 1, "cameras": {"1": [{"x": 1}, null], '
+                '"2": [null, {"x": 2}]}}', encoding="utf-8")
+            loaded = load_crop_store(path, ["XS", "M", "2XL"])
+            self.assertEqual(crop_cameras_for_size(loaded, "M")["1"][0], {"x": 1})
+            self.assertEqual(crop_cameras_for_size(loaded, "2XL")["2"], [None, None])
 
     def test_store_keeps_the_ratio_the_crops_were_marked_at(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "crops.json"
-            data = {"version": 1, "aspect_ratio": [4, 1],
-                    "cameras": {"1": [{"x": 1}, None], "2": [None, {"x": 2}]}}
+            data = {"version": 2, "aspect_ratio": [4, 1],
+                    "sizes": {"M": {
+                        "1": [{"x": 1}, None], "2": [None, {"x": 2}]}}}
             save_crop_store(path, data)
             self.assertEqual(load_crop_store(path)["aspect_ratio"], [4, 1])
 

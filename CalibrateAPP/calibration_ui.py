@@ -16,7 +16,7 @@ from camera_handler import CameraStream
 # The optional per-region homography mode. Imported at module level like the other
 # runtime modules, but nothing below this line changes because of it: the existing checks
 # neither read nor call any of it.
-from crop_processing import extract_rotated_crop, load_crop_store
+from crop_processing import crop_cameras_for_size, extract_rotated_crop, load_crop_store
 import plane_scale
 import region_calibration
 
@@ -3154,9 +3154,13 @@ class CalibrationCheckApp(CalibrationApp):
             return None
         index = self.region_check_index if region_index is None else region_index
         try:
-            definitions = load_crop_store(
-                project_path(CONFIG['crop_setup']['definitions_file'])
-            )['cameras'][str(self._camera_number())]
+            store = load_crop_store(
+                project_path(CONFIG['crop_setup']['definitions_file']),
+                CONFIG['inspection']['sizes'], CONFIG['inspection']['default_size'],
+            )
+            definitions = crop_cameras_for_size(
+                store, CONFIG['inspection']['default_size'])[
+                    str(self._camera_number())]
             definition = definitions[index - 1]
         except (KeyError, IndexError, TypeError, OSError, ValueError):
             return None

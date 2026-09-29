@@ -37,7 +37,7 @@ import cv2
 import numpy as np
 
 from app_config import CONFIG, project_path
-from crop_processing import extract_rotated_crop, load_crop_store
+from crop_processing import crop_cameras_for_size, extract_rotated_crop, load_crop_store
 from measure.makeUndistored import ImageUndistorter
 import plane_scale
 import region_calibration
@@ -117,7 +117,9 @@ class RegionCalibrationApp(CalibrationApp):
     def __init__(self, root, on_close=None, host=None, camera_provider=None,
                  on_open_setup=None, on_open_checks=None):
         self.on_open_setup = on_open_setup
-        self.crop_definitions = load_crop_store(crop_definitions_path())
+        self.crop_size = CONFIG['inspection']['default_size']
+        self.crop_definitions = load_crop_store(
+            crop_definitions_path(), CONFIG['inspection']['sizes'], self.crop_size)
         self.profiles = region_calibration.load_board_profiles(board_profiles_path())
         self.profile_index = self._default_profile_index()
         self.region_index = 1
@@ -179,7 +181,10 @@ class RegionCalibrationApp(CalibrationApp):
     def _crop_for(self, region_index):
         """The saved definition for one region, or None when it has not been marked."""
         try:
-            definitions = self.crop_definitions['cameras'][str(self.camera_number())]
+            definitions = crop_cameras_for_size(
+                self.crop_definitions,
+                getattr(self, 'crop_size', CONFIG['inspection']['default_size']),
+            )[str(self.camera_number())]
             definition = definitions[region_index - 1]
         except (KeyError, IndexError, TypeError):
             return None

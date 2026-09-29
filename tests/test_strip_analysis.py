@@ -313,12 +313,11 @@ class MetricTests(unittest.TestCase):
 
         for segment in metric.segments:
             text = strip_analysis._label_text(segment)
-            self.assertRegex(text, r'^S\d+ \d+\.\d\dmm$')
+            self.assertRegex(text, r'^\d+\.\d\dmm$')
 
-    def test_pixel_labels_are_still_used_without_a_scale(self):
+    def test_missing_scale_does_not_show_pixel_width_as_metric(self):
         for segment in self.analysis().analysis.segments:
-            self.assertRegex(
-                strip_analysis._label_text(segment), r'^S\d+ [\d.]+px NO MM$')
+            self.assertEqual(strip_analysis._label_text(segment), '')
 
     def test_each_metric_segment_is_graded_against_target_plus_or_minus_tolerance(self):
         base = self.metric_analysis()
@@ -330,11 +329,13 @@ class MetricTests(unittest.TestCase):
         self.assertTrue(all(
             segment.within_tolerance is False for segment in failed.segments))
         self.assertTrue(all(
-            strip_analysis._label_text(segment).endswith(' OK')
-            for segment in passed.segments))
+            strip_analysis._label_text(segment).endswith('mm')
+            for segment in passed.segments + failed.segments))
         self.assertTrue(all(
-            strip_analysis._label_text(segment).endswith(' FAIL')
-            for segment in failed.segments))
+            'OK' not in strip_analysis._label_text(segment)
+            and 'FAIL' not in strip_analysis._label_text(segment)
+            and not strip_analysis._label_text(segment).startswith('S')
+            for segment in passed.segments + failed.segments))
         self.assertEqual(strip_analysis._segment_color(passed.segments[0]),
                          strip_analysis.PASS_COLOR)
         self.assertEqual(strip_analysis._segment_color(failed.segments[0]),

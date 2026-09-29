@@ -20,7 +20,8 @@ import sam_detection
 from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
 from CalibrateAPP.region_calibration_ui import RegionCalibrationApp
 from crop_processing import (
-    crop_edit_from_saved, definition_fits_image, extract_rotated_crop,
+    crop_cameras_for_size, crop_edit_from_saved, definition_fits_image,
+    extract_rotated_crop,
     four_point_crop, load_crop_store, normalized_definition, pixel_definition,
     rotated_crop_corners, save_crop_store,
 )
@@ -106,9 +107,10 @@ class IndustrialDashboard:
         self.result_image_2 = None
 
         # Two persistent, independently deskewed crop regions per camera.
-        self.crop_definitions = load_crop_store(CROP_DEFINITIONS_FILE)
+        self.crop_definitions = load_crop_store(
+            CROP_DEFINITIONS_FILE, FIXED_SIZES, CONFIG['inspection']['default_size'])
         self.crop_setup_active = False
-        # Millimetre scale per (camera, crop). It depends only on the saved
+        # Millimetre scale per (size, camera, crop). It depends only on the saved
         # region and the calibration files, so it is built once and reused.
         self.strip_scales = {}
 
@@ -772,6 +774,7 @@ class IndustrialDashboard:
         self.crop_win.attributes("-topmost", True)
 
         self.crop_setup_active = True
+        self.crop_selected_size = self.active_size
         self.crop_selected_camera = 1
         self.crop_selected_index = 0
         self.crop_frozen = False
@@ -857,6 +860,19 @@ class IndustrialDashboard:
         themed_button(controls, "MARK 4 POINTS", self.start_crop_marking,
                       role="purple", width=14, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
 
+        size_controls = themed_card(content)
+        size_controls.pack(fill=tk.X, pady=(0, 8))
+        section_label(size_controls, "Crop size").pack(side=tk.LEFT, padx=(14, 10))
+        self.crop_size_buttons = {}
+        for size in FIXED_SIZES:
+            button = themed_button(
+                size_controls, size, lambda value=size: self._select_crop_size(value),
+                role="selected" if size == self.crop_selected_size else "secondary",
+                width=5, font_size=10, padx=8, pady=7,
+            )
+            button.pack(side=tk.LEFT, padx=2, pady=7)
+            self.crop_size_buttons[size] = button
+
         self.crop_status = tk.Label(
             content,
             text=(self.crop_ratio_warning or
@@ -876,6 +892,25 @@ class IndustrialDashboard:
         self.crop_canvas.bind("<B1-Motion>", self.on_crop_drag)
         self.crop_canvas.bind("<ButtonRelease-1>", self.on_crop_release)
 
+    def _crop_cameras(self, size=None, create=True):
+        selected = size or getattr(
+            self, 'crop_selected_size', getattr(self, 'active_size', 'M'))
+        return crop_cameras_for_size(self.crop_definitions, selected, create=create)
+
+    def _select_crop_size(self, size):
+        self.crop_selected_size = size
+        self.crop_edit_mode = "edit"
+        self.crop_mark_points = []
+        for name, button in self.crop_size_buttons.items():
+            set_button_role(button, "selected" if name == size else "secondary")
+        if self.crop_frozen_frame is not None:
+            self._load_selected_crop_for_edit()
+            self._display_crop_setup_frame(self.crop_frozen_frame)
+        self.crop_status.configure(
+            text=(f"Size {size}, Camera {self.crop_selected_camera}, Crop "
+                  f"{self.crop_selected_index + 1} selected")
+        )
+
     def _select_crop_camera(self, camera):
         self.crop_selected_camera = camera
         self.crop_frozen = False
@@ -887,7 +922,8 @@ class IndustrialDashboard:
         for number, button in self.crop_camera_buttons.items():
             set_button_role(button, "selected" if number == camera else "secondary")
         self.crop_status.configure(
-            text=f"Camera {camera} selected — live preview is raw; CAPTURE applies calibration"
+            text=(f"Size {self.crop_selected_size}, Camera {camera} selected — "
+                  "live preview is raw; CAPTURE applies calibration")
         )
 
     def _select_crop_index(self, crop_index):
@@ -900,7 +936,8 @@ class IndustrialDashboard:
             self._load_selected_crop_for_edit()
             self._display_crop_setup_frame(self.crop_frozen_frame)
         self.crop_status.configure(
-            text=f"Camera {self.crop_selected_camera}, Crop {crop_index + 1} selected"
+            text=(f"Size {self.crop_selected_size}, Camera {self.crop_selected_camera}, "
+                  f"Crop {crop_index + 1} selected")
         )
 
     def capture_crop_frame(self):
@@ -932,9 +969,7 @@ class IndustrialDashboard:
         )
 
     def _load_selected_crop_for_edit(self):
-        saved = self.crop_definitions["cameras"][str(self.crop_selected_camera)][
-            self.crop_selected_index
-        ]
+        saved = self._crop_cameras()[str(self.crop_selected_camera)][self.crop_selected_index]
         if saved is None or self.crop_frozen_frame is None:
             self.crop_edit = None
             return
@@ -972,7 +1007,7 @@ class IndustrialDashboard:
         self.crop_edit = None
         self.crop_mark_points = []
         self.crop_edit_mode = "edit"
-        camera_crops = self.crop_definitions["cameras"][str(self.crop_selected_camera)]
+        camera_crops = self._crop_cameras()[str(self.crop_selected_camera)]
         camera_crops[self.crop_selected_index] = None
         save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
         self.strip_scales.clear()
@@ -1010,9 +1045,8 @@ class IndustrialDashboard:
         self.crop_definitions["aspect_ratio"] = list(
             CONFIG['crop_setup']['aspect_ratio']
         )
-        self.crop_definitions["cameras"][str(self.crop_selected_camera)][
-            self.crop_selected_index
-        ] = definition
+        self._crop_cameras()[str(self.crop_selected_camera)][
+            self.crop_selected_index] = definition
         save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
         # Any scale built from this region is now stale -- it maps the crop raster that
         # just changed. In the per-region mode the stored signature catches this on the
@@ -1021,7 +1055,8 @@ class IndustrialDashboard:
         self.strip_scales.clear()
         self._redraw_crop_overlay()
         self.crop_status.configure(
-            text=(f"Saved Camera {self.crop_selected_camera}, Crop "
+            text=(f"Saved Size {self.crop_selected_size}, Camera "
+                  f"{self.crop_selected_camera}, Crop "
                   f"{self.crop_selected_index + 1} at {self.crop_edit['angle_degrees']:.1f}°")
         )
 
@@ -1756,10 +1791,12 @@ class IndustrialDashboard:
             return False
 
         camera_number = 1 if side == "L" else 2
-        saved_crops = self.crop_definitions["cameras"][str(camera_number)]
+        size_crops = self._crop_cameras(self.active_size, create=False)
+        saved_crops = (size_crops or {}).get(str(camera_number), [])
         if len(saved_crops) != 2 or any(crop is None for crop in saved_crops):
             self._show_error_popup(
-                f"Set up both crops for Camera {camera_number} before inspection."
+                f"Set up both {self.active_size} crops for Camera {camera_number} "
+                "before inspection."
             )
             return False
 
@@ -1831,9 +1868,10 @@ class IndustrialDashboard:
                 os.path.join(undistorted_dir, f"frame_{timestamp}.png"), frame_undist):
             raise RuntimeError("The undistorted camera frame could not be saved")
 
-        definitions = self.crop_definitions["cameras"][str(camera_num)]
+        definitions = self._crop_cameras(self.active_size)[str(camera_num)]
         if len(definitions) != 2 or any(definition is None for definition in definitions):
-            raise RuntimeError(f"Camera {camera_num} requires two saved crop regions")
+            raise RuntimeError(
+                f"Size {self.active_size}, Camera {camera_num} requires two saved crops")
 
         crops = []
         for crop_index, (definition, folder) in enumerate(zip(definitions, crop_dirs), start=1):
@@ -1874,7 +1912,7 @@ class IndustrialDashboard:
         Returns None when no scale is available, so the measurement falls back
         to pixels and the reason is reported rather than silently dropped.
         """
-        key = (camera_num, crop_index)
+        key = (self.active_size, camera_num, crop_index)
         if key not in self.strip_scales:
             self.strip_scales[key] = self._build_strip_scale(
                 key, frame_size, warnings,
@@ -1882,7 +1920,7 @@ class IndustrialDashboard:
         return self.strip_scales[key]
 
     def _build_strip_scale(self, key, frame_size, warnings):
-        camera_num, crop_index = key
+        size_name, camera_num, crop_index = key
         if not CONFIG['sam_detection']['measure_in_mm']:
             return None
         size = frame_size or self._undistorted_size(camera_num)
@@ -1892,7 +1930,7 @@ class IndustrialDashboard:
                 "size is unknown)")
             return None
         try:
-            definitions = self.crop_definitions['cameras'][str(camera_num)]
+            definitions = self._crop_cameras(size_name)[str(camera_num)]
             # The optional per-region mode. Off by default, and when it is off the call
             # below is the same one it has always been -- no branch, no extra work.
             if region_calibration.region_mode_enabled():

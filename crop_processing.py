@@ -18,8 +18,55 @@ MIN_CROP_WIDTH_PX = 120.0
 MAX_END_EDGE_TILT_DEGREES = 60.0
 
 
-def empty_crop_store():
-    return {"version": 1, "cameras": {"1": [None, None], "2": [None, None]}}
+DEFAULT_CROP_SIZE = "M"
+
+
+def _empty_cameras():
+    return {"1": [None, None], "2": [None, None]}
+
+
+def normalized_size_name(size):
+    """Canonical key used by settings, crop setup and inspection."""
+    text = str(size or DEFAULT_CROP_SIZE).strip().upper()
+    return text or DEFAULT_CROP_SIZE
+
+
+def empty_crop_store(sizes=None):
+    names = [normalized_size_name(size) for size in (sizes or [DEFAULT_CROP_SIZE])]
+    return {
+        "version": 2,
+        "sizes": {name: _empty_cameras() for name in dict.fromkeys(names)},
+    }
+
+
+def crop_cameras_for_size(data, size, create=False):
+    """Return the four saved regions for ``size``.
+
+    Version-1 stores had one top-level ``cameras`` object. It is treated as the
+    Medium profile so an existing installation keeps its current crops during
+    migration.
+    """
+    name = normalized_size_name(size)
+    if not isinstance(data, dict):
+        return _empty_cameras() if create else None
+    sizes = data.get("sizes")
+    if not isinstance(sizes, dict):
+        legacy = data.get("cameras")
+        if (not create and name == DEFAULT_CROP_SIZE
+                and isinstance(legacy, dict)):
+            return legacy
+        if not create:
+            return None
+        legacy = legacy if isinstance(legacy, dict) else _empty_cameras()
+        data.pop("cameras", None)
+        data["version"] = 2
+        data["sizes"] = {DEFAULT_CROP_SIZE: legacy}
+        sizes = data["sizes"]
+    if name not in sizes:
+        if not create:
+            return None
+        sizes[name] = _empty_cameras()
+    return sizes[name]
 
 
 def parallel_line_angle(first, second):
@@ -176,25 +223,38 @@ def four_point_crop(points, image_size, ratio=4.0, margin_percent=0.0,
     }
 
 
-def load_crop_store(path):
+def load_crop_store(path, sizes=None, default_size=DEFAULT_CROP_SIZE):
     path = Path(path)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, ValueError, TypeError):
-        return empty_crop_store()
-    cameras = data.get("cameras") if isinstance(data, dict) else None
-    if not isinstance(cameras, dict):
-        return empty_crop_store()
-    result = empty_crop_store()
+        return empty_crop_store(sizes)
+    if not isinstance(data, dict):
+        return empty_crop_store(sizes)
+    requested = [normalized_size_name(size) for size in (sizes or [])]
+    stored_sizes = data.get("sizes")
+    if isinstance(stored_sizes, dict):
+        requested.extend(normalized_size_name(size) for size in stored_sizes)
+    if not requested:
+        requested = [normalized_size_name(default_size)]
+    result = empty_crop_store(requested)
     # The ratio these regions were measured at, so a later change to the configured
     # aspect ratio is reported instead of silently reshaping every saved crop.
     stored_ratio = data.get("aspect_ratio")
     if isinstance(stored_ratio, (list, tuple)) and len(stored_ratio) == 2:
         result["aspect_ratio"] = list(stored_ratio)
-    for camera in ("1", "2"):
-        crops = cameras.get(camera, [])
-        if isinstance(crops, list):
-            result["cameras"][camera] = (crops[:2] + [None, None])[:2]
+    sources = stored_sizes if isinstance(stored_sizes, dict) else {
+        normalized_size_name(default_size): data.get("cameras", {})
+    }
+    for size, cameras in sources.items():
+        name = normalized_size_name(size)
+        if not isinstance(cameras, dict):
+            continue
+        target = crop_cameras_for_size(result, name, create=True)
+        for camera in ("1", "2"):
+            crops = cameras.get(camera, [])
+            if isinstance(crops, list):
+                target[camera] = (crops[:2] + [None, None])[:2]
     return result
 
 

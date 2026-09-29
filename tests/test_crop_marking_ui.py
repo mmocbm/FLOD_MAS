@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 import main_1366 as main
+from crop_processing import crop_cameras_for_size, empty_crop_store
 
 FRAME = (1400, 900)          # width, height of the frozen undistorted frame
 RATIO = main.CROP_RATIO
@@ -21,7 +22,9 @@ def make_app():
     """A dashboard sitting in crop setup with one frame frozen and captured."""
     app = main.IndustrialDashboard.__new__(main.IndustrialDashboard)
     app.root = MagicMock()
-    app.crop_definitions = {'version': 1, 'cameras': {'1': [None, None], '2': [None, None]}}
+    app.crop_definitions = empty_crop_store(main.FIXED_SIZES)
+    app.active_size = 'M'
+    app.crop_selected_size = 'M'
     app.crop_selected_camera = 1
     app.crop_selected_index = 0
     app.crop_frozen = True
@@ -110,7 +113,7 @@ class CropMarkingTests(unittest.TestCase):
         app = make_app()
         app.save_crop_region()
         app._show_error_popup.assert_called_once()
-        self.assertIsNone(app.crop_definitions['cameras']['1'][0])
+        self.assertIsNone(crop_cameras_for_size(app.crop_definitions, 'M')['1'][0])
 
     def test_dragging_inside_a_marked_crop_moves_it(self):
         app = make_app()
@@ -166,7 +169,7 @@ class CropSavingTests(unittest.TestCase):
         self.assertTrue(store.called)
         self.assertEqual(app.crop_definitions["aspect_ratio"],
                          list(main.CONFIG['crop_setup']['aspect_ratio']))
-        saved = app.crop_definitions['cameras']['1'][0]
+        saved = crop_cameras_for_size(app.crop_definitions, 'M')['1'][0]
         self.assertEqual(len(saved["marked_quad_normalized"]), 4)
 
     def test_saving_refuses_when_the_margin_leaves_the_image(self):
@@ -178,9 +181,32 @@ class CropSavingTests(unittest.TestCase):
         with patch.object(main, 'save_crop_store') as store:
             app.save_crop_region()
         self.assertFalse(store.called)
-        self.assertIsNone(app.crop_definitions['cameras']['1'][0])
+        self.assertIsNone(crop_cameras_for_size(app.crop_definitions, 'M')['1'][0])
         app._show_error_popup.assert_called_once()
         self.assertIn("margin", app._show_error_popup.call_args.args[0])
+
+    def test_each_size_saves_an_independent_crop(self):
+        app = make_app()
+        app.start_crop_marking()
+        for point in valid_quad():
+            press(app, *point)
+        with patch.object(main, 'save_crop_store'):
+            app.save_crop_region()
+        medium = crop_cameras_for_size(app.crop_definitions, 'M')['1'][0]
+
+        app.crop_selected_size = 'XL'
+        app.crop_edit = None
+        self.assertIsNone(crop_cameras_for_size(app.crop_definitions, 'XL')['1'][0])
+        app.start_crop_marking()
+        for x, y in valid_quad():
+            press(app, x + 100, y)
+        with patch.object(main, 'save_crop_store'):
+            app.save_crop_region()
+        extra_large = crop_cameras_for_size(app.crop_definitions, 'XL')['1'][0]
+
+        self.assertIsNotNone(medium)
+        self.assertIsNotNone(extra_large)
+        self.assertNotEqual(medium['center_normalized'], extra_large['center_normalized'])
 
 
 if __name__ == '__main__':
