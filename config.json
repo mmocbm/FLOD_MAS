@@ -29,5 +29,18 @@
     "strip_segments": 10,
     "measure_in_mm": true
   },
+  "region_homography": {
+    "enabled": false,
+    "store_file": "Files/region_homographies.json",
+    "board_profiles_file": "Files/board_definitions.json",
+    "default_profile": "Region board 17x7",
+    "minimum_corners": 8,
+    "maximum_rms_mm": 0.5,
+    "maximum_tilt_degrees": 2.0,
+    "maximum_gap_mm": 2.0,
+    "maximum_scale_error_percent": 2.0,
+    "refine_intrinsics": false,
+    "minimum_refinement_views": 5
+  },
   "color_mask": {"hue_range": 10, "saturation_range": 80, "value_range": 80}
 }

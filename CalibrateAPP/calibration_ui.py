@@ -13,6 +13,12 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app_config import CONFIG, camera_config, project_path
 from camera_handler import CameraStream
+# The optional per-region homography mode. Imported at module level like the other
+# runtime modules, but nothing below this line changes because of it: the existing checks
+# neither read nor call any of it.
+from crop_processing import extract_rotated_crop, load_crop_store
+import plane_scale
+import region_calibration
 
 import cv2
 import numpy as np
@@ -2206,6 +2212,8 @@ class CalibrationCheckApp(CalibrationApp):
             role="quiet", width=13, pady=6,
         ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
 
+        self._create_region_check_section(checks)
+
         self.check_report = scrolledtext.ScrolledText(
             controls, height=9, bg=TITLE_BG, fg=C["text_soft"],
             insertbackground=TEXT, font=(MONO_FONT, 9), wrap=tk.WORD,
@@ -2252,6 +2260,14 @@ class CalibrationCheckApp(CalibrationApp):
         self.manual_measurement_btn.configure(
             state=tk.NORMAL if ready else tk.DISABLED,
         )
+        if hasattr(self, 'region_check_btn'):
+            # The region check needs a saved local homography for the selected region and
+            # the crop region it was fitted on, so it is gated more tightly than the
+            # others -- but it borrows the same live camera and intrinsics.
+            self.region_check_btn.configure(
+                state=tk.NORMAL if (ready and self._region_check_ready())
+                else tk.DISABLED,
+            )
 
     def _load_saved_intrinsics(self):
         saved = super()._load_saved_intrinsics()
@@ -2755,6 +2771,348 @@ class CalibrationCheckApp(CalibrationApp):
         self._hide_manual_measurement()
         self.check_preview_frozen = False
         self._set_check_preview_title("CAMERA PREVIEW", C["text_soft"])
+
+    # -- optional: per-region homography check ------------------------------------------
+    #
+    # A separate check, beside the existing ones rather than instead of them. The saved
+    # lens check and the measurement-accuracy check both grade the *global* model: one
+    # asks how well the lens projects, the other how well the plane converts pixels to
+    # millimetres anywhere on the bed. This one asks a narrower question -- does the local
+    # homography that will actually be used for a region still reproduce the board's
+    # printed geometry, and does it agree with what the global plane says about the same
+    # points. Both can be true while this is false, and vice versa, which is why it is
+    # worth a check of its own.
+
+    def _create_region_check_section(self, parent):
+        region_settings = CONFIG.get('region_homography', {})
+        section = tk.Frame(
+            parent, bg=C["surface_2"], highlightbackground=C["border_strong"],
+            highlightthickness=1,
+        )
+        section.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.region_check_index = 1
+        self.region_check_btn = themed_button(
+            section, "CHECK REGION HOMOGRAPHY", self.verify_region_homography,
+            role="secondary", width=29, pady=9, state=tk.DISABLED,
+        )
+        if not region_settings.get('enabled', False):
+            # Shown, but inert and self-explanatory: the mode is opt-in, and an operator
+            # should be able to see that the check exists without having to guess why the
+            # button does nothing.
+            section_label(section, "4  Region homography (mode is off)").pack(
+                anchor="w", padx=10, pady=(9, 3),
+            )
+            tk.Label(
+                section,
+                text=("Enable region_homography in config.json and save a local "
+                      "homography per region to use this check."),
+                bg=C["surface_2"], fg=MUTED, wraplength=370, justify=tk.LEFT,
+                font=(FONT, 9),
+            ).pack(anchor="w", padx=10, pady=(0, 8))
+            return
+        section_label(section, "4  Region homography").pack(
+            anchor="w", padx=10, pady=(9, 3),
+        )
+        tk.Label(
+            section,
+            text=("Lay the same board flat inside the region and capture. The saved "
+                  "local homography is graded against the board's printed geometry, and "
+                  "against the global measurement plane."),
+            bg=C["surface_2"], fg=MUTED, wraplength=370, justify=tk.LEFT,
+            font=(FONT, 9),
+        ).pack(anchor="w", padx=10, pady=(0, 7))
+        region_row = tk.Frame(section, bg=C["surface_2"])
+        region_row.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.region_check_buttons = {}
+        for index in (1, 2):
+            button = themed_button(
+                region_row, f"REGION 0{index}",
+                command=lambda i=index: self.select_check_region(i),
+                role="selected" if index == 1 else "secondary",
+                width=13, pady=6,
+            )
+            button.pack(side=tk.LEFT, expand=True, fill=tk.X,
+                        padx=(0, 3) if index == 1 else (3, 0))
+            self.region_check_buttons[index] = button
+        self.region_check_btn.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.region_check_info = tk.Label(
+            section, text="", bg=TITLE_BG, fg=C["text_soft"], justify=tk.LEFT,
+            wraplength=370, font=(FONT, 9), padx=9, pady=6,
+        )
+        self.region_check_info.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self._refresh_region_check_info()
+
+    def select_check_region(self, region_index):
+        if self.processing_verification:
+            return
+        self.region_check_index = region_index
+        for index, button in self.region_check_buttons.items():
+            set_button_role(button,
+                            "selected" if index == region_index else "secondary")
+        self._refresh_region_check_info()
+        self._refresh_stage_ui()
+
+    def _camera_number(self):
+        """1 or 2 by position, derived from the calibration file this page is using.
+
+        The config ``index`` is the device's capture index, not the side's number, so the
+        number is recovered by matching the file rather than by trusting the index.
+        """
+        calibration = self._calibration_path()
+        for number in range(1, len(CONFIG['cameras']) + 1):
+            paths = region_calibration.camera_paths(number)
+            if paths and paths[0] and Path(paths[0]) == calibration:
+                return number
+        return 1
+
+    def _check_region_crop(self, region_index=None):
+        index = self.region_check_index if region_index is None else region_index
+        try:
+            definitions = load_crop_store(
+                project_path(CONFIG['crop_setup']['definitions_file'])
+            )['cameras'][str(self._camera_number())]
+            definition = definitions[index - 1]
+        except (KeyError, IndexError, TypeError, OSError, ValueError):
+            return None
+        return definition if isinstance(definition, dict) else None
+
+    def _region_check_ready(self):
+        if not CONFIG.get('region_homography', {}).get('enabled', False):
+            return False
+        if self._check_region_crop() is None:
+            return False
+        try:
+            store = region_calibration.load_region_store(
+                project_path(CONFIG['region_homography']['store_file'])
+            )
+            return region_calibration.stored_region_entry(
+                store, self._camera_number(), self.region_check_index) is not None
+        except (KeyError, OSError, ValueError, region_calibration.RegionCalibrationError):
+            return False
+
+    def _refresh_region_check_info(self):
+        if not hasattr(self, 'region_check_info'):
+            return
+        label = f"REGION 0{self.region_check_index}"
+        if self._check_region_crop() is None:
+            self.region_check_info.configure(
+                text=f"{label}: no crop region is marked for this camera.")
+            return
+        try:
+            store = region_calibration.load_region_store(
+                project_path(CONFIG['region_homography']['store_file'])
+            )
+            entry = region_calibration.stored_region_entry(
+                store, self._camera_number(), self.region_check_index)
+        except (KeyError, OSError, ValueError, region_calibration.RegionCalibrationError):
+            entry = None
+        if entry is None:
+            self.region_check_info.configure(
+                text=f"{label}: no local homography saved yet.")
+            return
+        metrics = entry.get('metrics', {}) or {}
+        self.region_check_info.configure(
+            text=(f"{label}: saved RMS {metrics.get('rms_mm', float('nan')):.3f} mm "
+                  f"over {metrics.get('corners', 0)} corners, fitted to "
+                  f"{(entry.get('board') or {}).get('name', 'a board')}"))
+
+    def verify_region_homography(self):
+        """Re-measure the region board's printed spans through the saved local homography."""
+        if (self.current_frame is None or self.processing_capture
+                or self.processing_verification):
+            return
+        if not self._region_check_ready():
+            self._set_check_report(
+                "The selected region has no saved local homography, or its crop region "
+                "has been cleared. Calibrate it on the Region Calibration page first."
+            )
+            return
+        with self.frame_lock:
+            frame = self.current_frame.copy()
+        self.processing_verification = True
+        self.check_preview_frozen = True
+        self._set_check_preview_title(
+            f"●  CAPTURED REGION 0{self.region_check_index} FRAME", AMBER)
+        self._set_status("Checking the saved region homography…", AMBER)
+        self._set_check_report(
+            "Undistorting the frame, detecting the board and measuring through the "
+            "saved local homography…"
+        )
+        self._refresh_stage_ui()
+        threading.Thread(
+            target=self._region_homography_worker, args=(frame,), daemon=True,
+        ).start()
+
+    def _region_homography_worker(self, frame):
+        try:
+            settings = CONFIG['region_homography']
+            region_index = self.region_check_index
+            camera_number = self._camera_number()
+            definition = self._check_region_crop(region_index)
+            frame_size = (frame.shape[1], frame.shape[0])
+
+            # The homography maps the crop raster of the *undistorted* frame -- the same
+            # raster the crop regions were marked on -- so the frame is put through the
+            # lens model before anything else. Checking it on the raw frame would measure
+            # a different image from the one the homography was fitted to.
+            camera_matrix = scale_camera_matrix(
+                np.asarray(self.camera_matrix, np.float64),
+                self.calibration_image_size, frame_size,
+            )
+            undistorted = cv2.undistort(
+                frame, camera_matrix, np.asarray(self.dist_coeffs, np.float64),
+                None, camera_matrix,
+            )
+
+            store = region_calibration.load_region_store(
+                project_path(settings['store_file']))
+            entry = region_calibration.stored_region_entry(
+                store, camera_number, region_index)
+            if entry is None:
+                raise region_calibration.RegionCalibrationError(
+                    f"Region {region_index} of camera {camera_number} has no saved "
+                    "local homography")
+            # The board the homography was fitted to, copied into the store at save
+            # time, rather than whatever profile is selected now.
+            board = region_calibration.BoardDefinition.from_dict(entry['board'])
+
+            gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
+            detection = region_calibration.detect_board_in_region(
+                gray, board, definition, frame_size, CROP_OUTPUT_SIZE, CROP_RATIO,
+                int(settings.get('minimum_corners', 8)),
+            )
+            # Built through the runtime loader, so a crop region re-marked since the
+            # homography was saved is reported here rather than quietly used.
+            scale = region_calibration.load_region_scale(
+                camera_number, region_index, definition, frame_size,
+                CROP_OUTPUT_SIZE, CROP_RATIO,
+            )
+
+            rows = region_calibration.pairwise_distance_errors_mm(
+                scale.homography, detection.crop_points, detection.board_points_mm)
+            summary = summarize_accuracy(rows)
+
+            plane_summary = None
+            plane_note = None
+            try:
+                plane = plane_scale.load_plane_scale(
+                    camera_number, definition, frame_size, CROP_OUTPUT_SIZE,
+                    ratio=CROP_RATIO)
+                plane_summary = summarize_accuracy(
+                    region_calibration.pairwise_distance_errors_mm(
+                        plane.homography, detection.crop_points,
+                        detection.board_points_mm))
+            except (plane_scale.PlaneScaleError, KeyError, IndexError,
+                    ValueError, TypeError) as error:
+                plane_note = str(error)
+
+            annotated = self._annotate_region_check(undistorted, detection, scale,
+                                                    definition, summary)
+            self.root.after(
+                0, self._region_homography_complete,
+                annotated, summary, plane_summary, plane_note, board, entry,
+                region_index, detection,
+            )
+        except Exception as error:
+            self.root.after(0, self._region_homography_failed, str(error))
+
+    def _annotate_region_check(self, frame, detection, scale, definition, summary):
+        """The deskewed crop with the detected corners and the fitted geometry on it."""
+        try:
+            crop = extract_rotated_crop(frame, definition, CROP_OUTPUT_SIZE, CROP_RATIO)
+        except (cv2.error, ValueError, TypeError):
+            crop = frame
+        for point in detection.crop_points:
+            cv2.drawMarker(crop, (int(round(point[0])), int(round(point[1]))),
+                           self._hex_to_bgr(GREEN), cv2.MARKER_CROSS, 16, 2)
+        try:
+            inverse = np.linalg.inv(np.asarray(scale.homography, np.float64))
+            ideal = cv2.perspectiveTransform(
+                np.asarray(detection.board_points_mm, np.float64).reshape(-1, 1, 2),
+                inverse).reshape(-1, 2)
+        except (np.linalg.LinAlgError, cv2.error):
+            return crop
+        for point in ideal:
+            cv2.circle(crop, (int(round(point[0])), int(round(point[1]))), 5,
+                       self._hex_to_bgr(AMBER), 1)
+        overall = summary['overall']
+        scale_factor = max(0.7, crop.shape[1] / 1800.0)
+        cv2.putText(
+            crop, f"Region homography: RMSE {overall['rmse_mm']:.3f} mm",
+            (25, 45), cv2.FONT_HERSHEY_SIMPLEX, scale_factor,
+            self._hex_to_bgr(TEXT), max(2, round(2 * scale_factor)), cv2.LINE_AA,
+        )
+        cv2.putText(
+            crop,
+            f"Max {overall['maximum_absolute_error_mm']:.3f} mm over "
+            f"{overall['count']} spans",
+            (25, 85), cv2.FONT_HERSHEY_SIMPLEX, scale_factor,
+            self._hex_to_bgr(AMBER), max(2, round(2 * scale_factor)), cv2.LINE_AA,
+        )
+        return crop
+
+    def _region_homography_complete(self, annotated, summary, plane_summary, plane_note,
+                                    board, entry, region_index, detection):
+        self.processing_verification = False
+        self._set_check_preview_title(
+            f"●  REGION 0{region_index} HOMOGRAPHY RESULT", PURPLE)
+        self._show_check_frame(annotated)
+        overall = summary['overall']
+        limit = float(CONFIG['region_homography'].get('maximum_rms_mm', 0.5))
+        passed = overall['rmse_mm'] <= limit
+        lines = [
+            f"REGION 0{region_index} LOCAL HOMOGRAPHY CHECK",
+            f"Board: {board.describe()}",
+            f"Corners detected: {detection.corner_count} "
+            f"({detection.outside_region} outside the crop raster)",
+            f"Stored fit RMS: {entry.get('metrics', {}).get('rms_mm', float('nan')):.4f} mm",
+            "",
+            self._accuracy_metrics_text("PRINTED GEOMETRY THROUGH THE LOCAL HOMOGRAPHY",
+                                        overall),
+            f"Limit: RMSE <= {limit:.3f} mm   "
+            f"{'PASS' if passed else 'FAIL'}",
+            "",
+        ]
+        if plane_summary is not None:
+            plane_overall = plane_summary['overall']
+            difference = (overall['maximum_absolute_error_mm']
+                          - plane_overall['maximum_absolute_error_mm'])
+            lines.extend([
+                self._accuracy_metrics_text(
+                    "THE SAME POINTS THROUGH THE GLOBAL MEASUREMENT PLANE",
+                    plane_overall),
+                f"Difference in maximum error: {difference:+.3f} mm "
+                f"({'the local fit is better' if difference < 0 else 'the global plane is better'})",
+                "",
+            ])
+        elif plane_note:
+            lines.extend([f"No global-plane comparison: {plane_note}", ""])
+        lines.append(
+            "The two modes measure the same points by different routes. Neither is "
+            "asserted to be right here; a large gap between them is the signal, because "
+            "one of the two is then describing a plane the board was not on."
+        )
+        self._set_check_report("\n".join(lines))
+        self._set_status(
+            f"Region {region_index} check complete — RMSE "
+            f"{overall['rmse_mm']:.3f} mm ({'PASS' if passed else 'FAIL'})",
+            GREEN if passed else RED,
+        )
+        self.log(
+            f"Region {region_index} homography checked: {overall['count']} printed "
+            f"spans, RMSE {overall['rmse_mm']:.4f} mm, maximum "
+            f"{overall['maximum_absolute_error_mm']:.4f} mm, limit {limit:.3f} mm."
+        )
+        self._refresh_stage_ui()
+
+    def _region_homography_failed(self, error):
+        self.processing_verification = False
+        self.check_preview_frozen = False
+        self._set_check_preview_title("●  LIVE CAMERA PREVIEW", GREEN)
+        self._set_check_report(f"Region homography check failed.\n\n{error}")
+        self._set_status("The region homography could not be checked", RED)
+        self.log(f"Region homography check failed: {error}")
+        self._refresh_stage_ui()
 
     def open_calibration_checks(self):
         return

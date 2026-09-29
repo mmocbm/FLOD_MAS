@@ -312,6 +312,144 @@ measurement surface, run Camera Setup again and verify real measurements. Matrix
 scaling supports resized images, but cannot compensate for a camera driver changing
 its crop or field of view. Recreate saved crop regions if the view changes.
 
+## Region homography mode (optional)
+
+Everything above converts crop pixels to millimetres one way: one global lens
+calibration plus one global measurement-plane pose, composed into a single
+homography per crop region. That assumes the bed is one flat plane and that the
+lens model fits every part of the image equally well.
+
+`region_homography.enabled` adds a second, independent way to get millimetres for
+each crop region. A small ChArUco board is laid flat *inside* a region, and a
+homography is fitted directly from the corners the camera actually sees there. The
+intrinsics stay global; each region gets its own homography, and measurement uses
+that region's.
+
+**This does not replace the existing workflow.** With `enabled: false` — the
+default — nothing changes anywhere in the application. Both modes can be used, and
+compared, without either being removed.
+
+### Configuration
+
+```json
+"region_homography": {
+  "enabled": false,
+  "store_file": "Files/region_homographies.json",
+  "board_profiles_file": "Files/board_definitions.json",
+  "default_profile": "Region board 17x7",
+  "minimum_corners": 8,
+  "maximum_rms_mm": 0.5,
+  "maximum_tilt_degrees": 2.0,
+  "maximum_gap_mm": 2.0,
+  "maximum_scale_error_percent": 2.0,
+  "refine_intrinsics": false,
+  "minimum_refinement_views": 5
+}
+```
+
+`minimum_corners` is the fewest ChArUco corners a capture may yield and still be
+fitted; `maximum_rms_mm` grades the fit itself. The next three are the save gates,
+described below. `refine_intrinsics` is off by default and there is a good reason
+for that — see the limits.
+
+### Calibrating a region
+
+Open **REGION CALIBRATION** from the settings camera card. The page shows the
+**deskewed crop of one region**, not the full camera frame, because the crop is
+exactly the raster the homography is fitted to; showing anything else would mean
+the operator places the board against something other than what is measured.
+
+The page is gated on the crop regions: if either region for that camera has not
+been marked, every action is disabled and the banner names the missing region.
+Mark them in manual crop setup first.
+
+Pick a region, print its board, lay it flat inside the region and press **CAPTURE
+& FIT**. Regions are calibrated one at a time — region 01 with its board, then
+region 02 with its board. Only one board is needed.
+
+The board is described by named profiles in `board_profiles_file`, and every field
+is editable in the page, so a new physical board can be added without editing code.
+The default profile is DICT_5X5_100, 17 × 7, 15 mm checker, 11 mm marker. Sizes are
+the printed sizes: the checker figure must be the actual square pitch, because a
+board printed at 10 mm squares but described as 15 mm behaves differently, and
+worse, silently (see below).
+
+The page shows the board's footprint against the region's measured extent and turns
+red when the board cannot fit, with a **SHRINK TO FIT** button that computes the
+largest whole square size that does.
+
+### The three gates
+
+A fit is graded before it may be saved, and each gate catches a failure that leaves
+no trace in the residuals:
+
+- **Residual RMS** against `maximum_rms_mm`. The obvious one, and the weakest.
+- **Flatness.** The board's own plane is compared with the saved measurement plane
+  and must be within `maximum_tilt_degrees` and `maximum_gap_mm`. A board propped
+  up at an angle or resting on a shim fits *perfectly* — the homography describes
+  the board's plane instead of the measurement plane — and every later measurement
+  is then wrong by an amount nothing in the stored data reveals. This is the gate
+  that matters most.
+- **Scale agreement.** The fit's millimetres-per-pixel is compared against the
+  global plane's, within `maximum_scale_error_percent`. This is the *only* check
+  that can catch a board declared at the wrong size: a mis-declared board still
+  lines up exactly with the coordinates the wrong profile assigns it, so the
+  homography absorbs the factor and fits to a ten-thousandth of a millimetre while
+  reporting every length wrong by that factor.
+
+A failing gate refuses to save. The operator can insist past the flatness and scale
+gates with a confirmation, which is deliberate: a blocked measurement is worse than
+a flagged one, as long as the flag is recorded.
+
+### Saved data and invalidation
+
+`store_file` holds one entry per (camera, region), each carrying the homography,
+its residual metrics, the board that produced it, the intrinsic evaluation, and a
+`crop_signature`. The signature is a hash of the crop definition and the frame size
+it was fitted at.
+
+**Re-marking a crop region invalidates that region's homography**, and the
+signature is how that is detected. A stored homography describes pixels in the crop
+raster it was fitted on; move the region's corners and the same pixels are now a
+different part of the bed, so the stored millimetre scale is quietly wrong. The
+region is reported as stale rather than used, and must be re-calibrated.
+
+The homographies live in their own file, not inside the crop definitions, because
+`crop_processing` rebuilds each crop definition from scratch when a region is
+saved: anything stored inside one would be silently dropped the next time that
+region was re-marked.
+
+### Limits worth knowing
+
+- **Validity is local.** A region homography is exact only for objects lying on the
+  plane the board was on, within the region it was fitted on. Extrapolating outside
+  that is unchecked — the same caveat the global plane already carries.
+- **One view has no redundancy.** There is no outlier rejection in the sense of a
+  second opinion; a mis-detected corner biases the homography directly. Mitigated
+  by a ChArUco board yielding dozens of corners from a single view, and by gates
+  above.
+- **A single flat view cannot refine the lens.** `refine_intrinsics` needs several
+  *tilted* views and refuses below `minimum_refinement_views`, reporting why. This
+  is measured, not assumed: against a deliberate focal-length error, the local fit
+  is blind to it *exactly* (identical residuals whether the focal length is right
+  or five times wrong), and the lens evaluation does see it but far too weakly to
+  refine against — a 15% error reads as about half a pixel, which is inside
+  detection noise. Leave refinement off unless you have captured tilted views
+  deliberately. When it does run it is stored beside the global calibration and
+  never overwrites it.
+
+`tests/verify_region_calibration.py` measures all of the above against a synthetic
+rig with exactly known truth, and prints the numbers rather than asserting them.
+
+### Checking a region
+
+The calibration checks page gains a **Region homography** section alongside the
+existing lens and measurement-accuracy checks, which are unchanged. It captures a
+fresh image, maps the board's detected corners through the *saved* region
+homography, and reports measured against known distances in millimetres — graded
+against `maximum_rms_mm`. It also runs the same board through the global plane for
+comparison, so the two modes can be seen side by side.
+
 ## Other settings
 
 - `serial`: Arduino connection enabled, port and baud rate.

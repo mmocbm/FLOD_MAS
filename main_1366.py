@@ -15,8 +15,10 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 from app_config import CONFIG, project_path
 import plane_scale
+import region_calibration
 import sam_detection
 from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
+from CalibrateAPP.region_calibration_ui import RegionCalibrationApp
 from crop_processing import (
     crop_edit_from_saved, definition_fits_image, extract_rotated_crop,
     four_point_crop, load_crop_store, normalized_definition, pixel_definition,
@@ -71,6 +73,12 @@ def open_windows_keyboard():
 
 # ======================================================================
 class IndustrialDashboard:
+    # The per-crop millimetre scales, keyed by (camera, crop). Declared here as well as
+    # assigned in __init__ so that a code path reached on a partially-built instance --
+    # re-marking a crop region in a test, for instance -- can still invalidate it rather
+    # than failing on a missing attribute.
+    strip_scales = {}
+
     def __init__(self, root, on_reset_callback):
         self.root = root
         self.on_reset_callback = on_reset_callback
@@ -433,6 +441,11 @@ class IndustrialDashboard:
             camera_card, "OPEN CALIBRATION CHECK  →", self.open_calibration_checks_page,
             role="purple",
         ).pack(anchor="w", padx=24, pady=(0, 24))
+        if region_calibration.region_mode_enabled():
+            themed_button(
+                camera_card, "OPEN REGION CALIBRATION  →",
+                self.open_region_calibration_page, role="blue",
+            ).pack(anchor="w", padx=24, pady=(0, 24))
 
     def open_camera_setup(self):
         """Show setup inside the existing dashboard window and event loop."""
@@ -441,6 +454,10 @@ class IndustrialDashboard:
     def open_calibration_checks_page(self):
         """Show the dedicated live calibration-verification page."""
         self._open_camera_tool("checks")
+
+    def open_region_calibration_page(self):
+        """Show the optional per-region homography page."""
+        self._open_camera_tool("regions")
 
     def _open_camera_tool(self, page):
         # The result view lives inside main_frame, which this page hides. Leaving
@@ -478,6 +495,14 @@ class IndustrialDashboard:
                     self.root, host=self.calibration_page,
                     on_close=self.close_camera_setup,
                     on_open_setup=self.open_camera_setup,
+                    camera_provider=self._setup_camera_stream,
+                )
+            elif page == "regions":
+                self.calibration_app = RegionCalibrationApp(
+                    self.root, host=self.calibration_page,
+                    on_close=self.close_camera_setup,
+                    on_open_setup=self.open_camera_setup,
+                    on_open_checks=self.open_calibration_checks_page,
                     camera_provider=self._setup_camera_stream,
                 )
             else:
@@ -934,6 +959,7 @@ class IndustrialDashboard:
         camera_crops = self.crop_definitions["cameras"][str(self.crop_selected_camera)]
         camera_crops[self.crop_selected_index] = None
         save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
+        self.strip_scales.clear()
         self._redraw_crop_overlay()
         self.crop_status.configure(
             text="Crop cleared — press MARK 4 POINTS and click the four corners"
@@ -972,6 +998,11 @@ class IndustrialDashboard:
             self.crop_selected_index
         ] = definition
         save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
+        # Any scale built from this region is now stale -- it maps the crop raster that
+        # just changed. In the per-region mode the stored signature catches this on the
+        # next load and reports it; the cached objects would not, so they are dropped.
+        # They are rebuilt on the next inspection, so this costs nothing.
+        self.strip_scales.clear()
         self._redraw_crop_overlay()
         self.crop_status.configure(
             text=(f"Saved Camera {self.crop_selected_camera}, Crop "
@@ -1725,11 +1756,20 @@ class IndustrialDashboard:
             return None
         try:
             definitions = self.crop_definitions['cameras'][str(camera_num)]
+            # The optional per-region mode. Off by default, and when it is off the call
+            # below is the same one it has always been -- no branch, no extra work.
+            if region_calibration.region_mode_enabled():
+                return region_calibration.load_region_scale(
+                    camera_num, crop_index, definitions[crop_index - 1], size,
+                    CROP_OUTPUT_SIZE, CROP_RATIO,
+                )
             return plane_scale.load_plane_scale(
                 camera_num, definitions[crop_index - 1], size,
                 CROP_OUTPUT_SIZE, ratio=CROP_RATIO,
             )
-        except (plane_scale.PlaneScaleError, IndexError, KeyError) as error:
+        except (plane_scale.PlaneScaleError,
+                region_calibration.RegionCalibrationError,
+                IndexError, KeyError) as error:
             print(f"Camera {camera_num} Crop {crop_index}: measuring in pixels "
                   f"({error})")
             warnings.append(f"Crop {crop_index}: measuring in pixels ({error})")

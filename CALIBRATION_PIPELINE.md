@@ -84,6 +84,57 @@ It does **not** prove a physical installation by itself. Physical accuracy also 
 on the printed board dimensions, image focus, lighting, board flatness, camera rigidity,
 and the product occupying the same plane as the extrinsic board.
 
+### A second, optional proof
+
+```powershell
+.\.venv\Scripts\python.exe .\tests\verify_region_calibration.py
+```
+
+The optional per-region homography mode has its own proof, which shares the style
+of the one above: a synthetic rig with exactly known truth, a named check per claim
+with its threshold in the name, and `RESULT: PASS` at the end. It shows the mode
+working — the fit reproducing independent points on the plane, matching the printer's
+own board geometry, and agreeing with the global plane — and then breaks it on
+purpose in the three ways that leave a *perfect* residual and a wrong answer: a
+board off the plane, a board declared at the wrong size, and a focal length five
+times wrong. See the region homography section of `CONFIGURATION.md`.
+
+## Region homography mode (optional)
+
+The pipeline described in this document is the whole picture as long as
+`region_homography.enabled` is `false`, which is the default. When it is on, an
+*additional* millimetre scale is available per crop region, fitted directly from a
+ChArUco board placed inside that region, and measurement uses it in preference to
+the global plane.
+
+It is worth being precise about what this does and does not change:
+
+- **It does not replace or modify the global pipeline.** Intrinsics remain global.
+  The extrinsics step, the measurement-surface save, the lens check and the
+  measurement-accuracy check all behave exactly as described above. With the mode
+  off, nothing in the pipeline changes at all.
+- **It is independent of it.** A region homography is fitted from observed corners
+  and does not use the extrinsics. It does *cross-check* against them — the scale
+  agreement gate compares the two, which is the only way to catch a board declared
+  at the wrong physical size.
+- **Its validity is confined to the calibrated region.** The global plane covers the
+  whole image; a region homography covers one crop strip, on the plane the board was
+  on. Outside that, it is extrapolation.
+
+The honest limits, restated here because they are pipeline-level and not just UI
+detail:
+
+- One planar view carries almost no information about intrinsics. The mode
+  *evaluates* the global lens model in each region on every capture, which is
+  useful; it will only *refine* it from several deliberately tilted views, and
+  refuses with a reason otherwise. When it does refine, the result is stored beside
+  the global calibration and never written over it.
+- A homography fitted from one view has no redundancy. Detection error goes
+  straight into the answer, which is why the flatness and scale gates exist and why
+  a saved region carries its residual metrics.
+- Re-marking a crop region invalidates that region's homography, and the stored
+  crop signature makes that detectable rather than silent.
+
 ## Physical acceptance test
 
 After calibrating each camera:

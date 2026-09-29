@@ -137,6 +137,36 @@ if sam.get('enabled'):
     segments = sam.get('strip_segments')
     if isinstance(segments, bool) or not isinstance(segments, int) or segments < 1:
         raise ValueError("SAM detection strip_segments must be a positive integer")
+# The optional per-region homography mode. Read with .get throughout: an absent section
+# is the shipped state and must not stop the application from importing, since the whole
+# point of the mode is that it is additive and off by default.
+region = CONFIG.get('region_homography', {})
+if not isinstance(region, dict):
+    raise ValueError("region_homography must be an object")
+if not isinstance(region.get('enabled', False), bool):
+    raise ValueError("region_homography enabled must be true or false")
+for key in ('store_file', 'board_profiles_file', 'default_profile'):
+    if key in region and (not isinstance(region[key], str) or not region[key].strip()):
+        raise ValueError(f"region_homography {key} must not be empty")
+for key in ('minimum_corners', 'minimum_refinement_views'):
+    if key in region and (isinstance(region[key], bool)
+                          or not isinstance(region[key], int) or region[key] < 1):
+        raise ValueError(f"region_homography {key} must be a positive whole number")
+for key in ('maximum_rms_mm', 'maximum_tilt_degrees', 'maximum_gap_mm',
+            'maximum_scale_error_percent'):
+    if key in region and (isinstance(region[key], bool)
+                          or not isinstance(region[key], (int, float))
+                          or not 0 < region[key]):
+        raise ValueError(f"region_homography {key} must be a positive number")
+if not isinstance(region.get('refine_intrinsics', False), bool):
+    raise ValueError("region_homography refine_intrinsics must be true or false")
+# The floor a fit needs to exist at all; a configured minimum below it can never be met
+# by a successful fit, so the two would disagree about what "enough corners" means.
+if region.get('minimum_corners', 8) < 4:
+    raise ValueError(
+        "region_homography minimum_corners must be at least 4, the fewest points that "
+        "can pin down a plane"
+    )
 
 
 def camera_config(index):
