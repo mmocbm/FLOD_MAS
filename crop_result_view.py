@@ -136,14 +136,13 @@ def advance_angle(angle, elapsed):
 
 
 class CropResultView(tk.Frame):
-    """Automatically sequenced defect crops over a zoomable canvas."""
+    """Two automatically sequenced crops over a zoomable, draggable canvas."""
 
     def __init__(self, parent, on_toggle_pause, title="INSPECTION RESULT"):
         super().__init__(parent, bg=C["bg"])
         self._on_toggle_pause = on_toggle_pause
         self._title = title
         self._tabs = []
-        self._labels = []
         self._tab_buttons = []
         self._active = 0
         self._photo = None
@@ -161,11 +160,8 @@ class CropResultView(tk.Frame):
         header = tk.Frame(self, bg=C["bg"])
         header.pack(side=tk.TOP, fill=tk.X, pady=(0, 6))
 
-        self._title_label = tk.Label(
-            header, text=self._title, bg=C["bg"], fg=C["muted"],
-            font=("Segoe UI", 9, "bold"),
-        )
-        self._title_label.pack(side=tk.LEFT, padx=(0, 14))
+        tk.Label(header, text=self._title, bg=C["bg"], fg=C["muted"],
+                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 14))
 
         for index in range(2):
             tab = themed_button(
@@ -206,16 +202,9 @@ class CropResultView(tk.Frame):
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
-    def show_crops(self, crops, active_index=0, labels=None):
+    def show_crops(self, crops, active_index=0):
         """Replace the tabs with ``crops`` (a list of BGR arrays)."""
         self._tabs = [self._blank_tab(self._to_pil(crop)) for crop in crops]
-        self._labels = list(labels or [f"CROP {index + 1}" for index in range(len(crops))])
-        for index, button in enumerate(self._tab_buttons):
-            if index < len(self._tabs):
-                if not button.winfo_manager():
-                    button.pack(side=tk.LEFT, padx=(0, 6))
-            else:
-                button.pack_forget()
         self._active = active_index if 0 <= active_index < len(self._tabs) else 0
         self._angle = 0.0
         self._angle_at = None
@@ -226,10 +215,6 @@ class CropResultView(tk.Frame):
         if tab is not None and self._canvas_size()[0] > 2:
             self._fit_tab(tab)
         self._render()
-
-    def set_title(self, title):
-        self._title = str(title)
-        self._title_label.configure(text=self._title)
 
     def update_crop(self, crop_index, image, busy):
         """Show ``image`` in the 1-based ``crop_index`` tab, busy or finished."""
@@ -305,8 +290,7 @@ class CropResultView(tk.Frame):
         self._pause_button.configure(
             state=tk.NORMAL, text="PLAY" if paused else "PAUSE",
         )
-        destination = ("LIVE" if crop_index >= len(self._tabs) - 1
-                       else self._labels[crop_index + 1])
+        destination = "LIVE" if crop_index >= len(self._tabs) - 1 else f"CROP {crop_index + 2}"
         prefix = "PAUSED" if paused else f"{destination} IN"
         self._countdown_label.configure(text=f"{prefix}  {max(0, int(seconds))}s")
 
@@ -334,8 +318,7 @@ class CropResultView(tk.Frame):
             return f"CROP {index + 1}"
         tab = self._tabs[index]
         marker = MARKER_BUSY if tab["busy"] else MARKER_DONE if tab["done"] else ""
-        label = self._labels[index] if index < len(self._labels) else f"CROP {index + 1}"
-        return label + (f"  {marker}" if marker else "")
+        return f"CROP {index + 1}" + (f"  {marker}" if marker else "")
 
     def _refresh_tab_labels(self):
         for index, button in enumerate(self._tab_buttons):

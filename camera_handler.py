@@ -239,19 +239,3 @@ class CameraHandler:
 
     def get_raw_frame_with_ret(self):
         return self.read_frame(), self.current_frame_raw
-
-    def capture_snapshot(self):
-        """Return one raw/undistorted pair without touching preview cache state.
-
-        Inspection workers use this while the Tk preview continues reading both
-        cameras. Keeping the local raw frame paired with its own undistortion
-        prevents a preview tick from swapping ``current_frame_raw`` between the
-        two operations.
-        """
-        ok, frame = self.stream.read()
-        if not ok or frame is None:
-            return False, None, None
-        raw = frame.copy()
-        undistorted = (None if self.undistorter is None
-                       else self.undistorter.undistort(raw))
-        return True, raw, undistorted

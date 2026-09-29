@@ -121,17 +121,16 @@ saved, so an inspection can never be changed by an unsaved edit.
 
 Inspection saves one timestamp-matched original image, undistorted image, and two
 deskewed crops under `Dataset_capture/CameraN/{Original,Undistorted,Crop1,Crop2}`.
-The two crops are prepared independently at the configured output size. The crops
-selected in `sam_detection.send_crops` are then sent for object detection, described
-in the next section. All of these files are saved even when the inspection finds no
-defect and therefore shows no result crop.
+The two crops are prepared independently at the configured output size and displayed
+vertically. The crops selected in `sam_detection.send_crops` are then sent for object
+detection, described in the next section.
 
 ## SAM object detection
 
 `sam_detection` sends selected crops to the Roboflow serverless workflow
 `obhashcolab-1/sam3-with-prompts`, which runs SAM3 with a text prompt and returns
-polygons. It runs in a background inspection worker after the crops are saved.
-The opposite camera remains available for another capture while this work runs.
+polygons. It runs inside the inspection freeze, after the crops are saved and
+before the view is restored, so the operator sees a progress line while it works.
 
 - `enabled`: master switch. When false, inspection stops after saving crops and no
   request is made.
@@ -195,19 +194,12 @@ width, for example `4.10mm`; the colour carries the tolerance result. When no
 millimetre calibration is available, width labels are omitted and the dashboard
 reports a warning instead of claiming a tolerance result.
 
-After detection finishes, the dashboard shows only crops containing at least one
-red, out-of-tolerance segment. A clean crop is not previewed, although its images
-and detection data remain saved normally. Each defective crop is shown for
-`inspection.result_display_seconds` (default `5.0` seconds), then the dashboard
-advances to the next defective crop and finally resumes the dual live preview.
-The header shows the remaining seconds. **PAUSE/PLAY** freezes or resumes that
-countdown; the physical ESP32 button for the side currently on screen performs the
-same toggle.
-
-The opposite-side ESP32 button remains enabled during analysis and result display.
-It can capture and analyse its camera in the background. Its defective crops are
-queued and shown after the current side's sequence; if that side has no defect,
-nothing is added to the visible queue.
+After detection finishes, the dashboard automatically shows Crop 1 for
+`inspection.result_display_seconds` (default `5.0` seconds), then Crop 2 for the
+same time, and then resumes the dual live preview. The header shows the remaining
+seconds. **PAUSE/PLAY** freezes or resumes that countdown; during this result
+sequence the physical ESP32 button for the inspected side performs the same toggle.
+The opposite-side button continues to receive `BUSY`.
 
 This measures the plane, so it is only valid for a strip lying **on** that plane.
 A strip standing proud of it, a moved camera, or a re-aimed camera all invalidate
