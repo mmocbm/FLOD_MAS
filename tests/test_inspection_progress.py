@@ -208,10 +208,10 @@ class ResultPresentationOrderTests(unittest.TestCase):
             app._simulate_detection('L')
 
         app._present_detection_result.assert_called_once()
-        # Only START LIVE PREVIEW may end the inspection.
+        # The result sequence starts only when the worker-done callback runs.
         app._finish_detection.assert_not_called()
         self.assertTrue(any(
-            'START LIVE PREVIEW' in str(call)
+            'advance automatically' in str(call)
             for call in app.update_progress.call_args_list
         ))
 
@@ -274,32 +274,96 @@ class ProgressMarshallingTests(unittest.TestCase):
 
 
 class WorkerDoneTests(unittest.TestCase):
-    """The resume button only goes live once the worker stops uploading."""
+    """The automatic result sequence starts only after uploads finish."""
 
-    def test_finishing_enables_the_resume_button_and_clears_spinners(self):
+    def test_finishing_starts_the_sequence_and_clears_spinners(self):
         app = make_app()
         app.result_view = MagicMock()
+        app._start_result_sequence = MagicMock()
 
         app._inspection_worker_done()
 
         app.result_view.mark_all_idle.assert_called_once()
-        app.result_view.set_resume_enabled.assert_called_once_with(True)
+        app._start_result_sequence.assert_called_once_with()
 
     def test_a_destroyed_view_is_ignored(self):
         app = make_app()
         app.result_view = MagicMock()
         app.result_view.winfo_exists.return_value = False
+        app._start_result_sequence = MagicMock()
 
         app._inspection_worker_done()
 
-        app.result_view.set_resume_enabled.assert_not_called()
+        app._start_result_sequence.assert_not_called()
 
     def test_no_view_is_a_no_op(self):
         app = make_app()
         app.result_view = None
+        app._start_result_sequence = MagicMock()
 
         # Must not raise: the failures path tears the view down before this runs.
         app._inspection_worker_done()
+        app._start_result_sequence.assert_not_called()
+
+
+class ResultSequenceTests(unittest.TestCase):
+    def make_timer_app(self):
+        app = main.IndustrialDashboard.__new__(main.IndustrialDashboard)
+        app.root = MagicMock()
+        app.root.after.return_value = 'timer-job'
+        app.result_view = MagicMock()
+        app.result_view.winfo_exists.return_value = True
+        app.active_result_display_seconds = 5.0
+        app._result_timer_job = None
+        app._result_timer_active = False
+        app._result_timer_paused = False
+        return app
+
+    @patch.object(main.time, 'monotonic', return_value=10.0)
+    def test_sequence_starts_on_crop_one_with_five_second_countdown(self, _clock):
+        app = self.make_timer_app()
+
+        app._start_result_sequence()
+
+        app.result_view.show_transition.assert_called_once_with(0, 5, paused=False)
+        app.root.after.assert_called_once_with(100, app._result_timer_tick)
+
+    @patch.object(main.time, 'monotonic', return_value=20.0)
+    def test_sequence_advances_to_crop_two_then_live(self, _clock):
+        app = self.make_timer_app()
+        app._result_timer_active = True
+        app._result_sequence_index = 0
+        app.start_live_preview = MagicMock()
+
+        app._advance_result_sequence()
+
+        app.result_view.show_transition.assert_called_once_with(1, 5, paused=False)
+        self.assertEqual(app._result_sequence_index, 1)
+        app._advance_result_sequence()
+        app.start_live_preview.assert_called_once_with()
+
+    @patch.object(main.time, 'monotonic', side_effect=[11.0, 12.0])
+    def test_pause_freezes_remaining_time_and_play_restarts_it(self, _clock):
+        app = self.make_timer_app()
+        app._result_timer_active = True
+        app._result_timer_paused = False
+        app._result_timer_job = 'timer-job'
+        app._result_sequence_index = 0
+        app._result_timer_remaining = 5.0
+        app._result_timer_last_tick = 10.0
+
+        app.toggle_result_timer()
+
+        self.assertTrue(app._result_timer_paused)
+        self.assertEqual(app._result_timer_remaining, 4.0)
+        app.root.after_cancel.assert_called_once_with('timer-job')
+        app.result_view.show_transition.assert_called_with(0, 4, paused=True)
+
+        app.toggle_result_timer()
+
+        self.assertFalse(app._result_timer_paused)
+        app.result_view.show_transition.assert_called_with(0, 4, paused=False)
+        app.root.after.assert_called_once_with(100, app._result_timer_tick)
 
 
 class SerialOutcomeTests(unittest.TestCase):

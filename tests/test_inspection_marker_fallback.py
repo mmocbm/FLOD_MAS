@@ -56,13 +56,13 @@ class InspectionCropPreparationTests(unittest.TestCase):
         app._display_video_frame.assert_not_called()
         app.maximize_camera.assert_not_called()
         app.restore_dual_view.assert_not_called()
-        # The inspection is not finished here: START LIVE PREVIEW does that.
+        # The worker-done callback starts the timed sequence after this returns.
         app._finish_detection.assert_not_called()
         # The 1.2s pause and the red highlight existed only to make the
         # maximized view readable, which the held result replaces.
         _sleep.assert_not_called()
         self.assertTrue(any(
-            'START LIVE PREVIEW' in str(call)
+            'advance automatically' in str(call)
             for call in app.update_progress.call_args_list
         ))
 

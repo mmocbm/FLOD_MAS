@@ -30,6 +30,8 @@ def make_app():
     app.crop_definitions = {'cameras': {'1': [], '2': []}}
     app.camera1 = None
     app.camera2 = None
+    app.active_strip_width = 4.0
+    app.active_strip_width_tolerance = 1.0
     return app
 
 
@@ -118,7 +120,8 @@ class DetectCropsTests(unittest.TestCase):
                 patch.object(main.json, 'dump') as dump:
             display, warnings = app._detect_crops(1, 'ts', images)
 
-        self.assertEqual(warnings, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('width tolerance was not checked', warnings[0])
         record = dump.call_args[0][0]
         self.assertEqual(len(record['strip']['segments']), 10)
         self.assertGreater(record['strip']['total_length_px'], 1000)

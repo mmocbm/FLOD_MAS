@@ -313,11 +313,45 @@ class MetricTests(unittest.TestCase):
 
         for segment in metric.segments:
             text = strip_analysis._label_text(segment)
-            self.assertRegex(text, r'^\d+: \d+\.\d\dmm$')
+            self.assertRegex(text, r'^S\d+ \d+\.\d\dmm$')
 
     def test_pixel_labels_are_still_used_without_a_scale(self):
         for segment in self.analysis().analysis.segments:
-            self.assertRegex(strip_analysis._label_text(segment), r'^\d+: [\d.]+px$')
+            self.assertRegex(
+                strip_analysis._label_text(segment), r'^S\d+ [\d.]+px NO MM$')
+
+    def test_each_metric_segment_is_graded_against_target_plus_or_minus_tolerance(self):
+        base = self.metric_analysis()
+        target = base.average_width_mm
+        passed = strip_analysis.grade_widths(base, target, 2.0)
+        failed = strip_analysis.grade_widths(base, 4.0, 1.0)
+
+        self.assertTrue(all(segment.within_tolerance for segment in passed.segments))
+        self.assertTrue(all(
+            segment.within_tolerance is False for segment in failed.segments))
+        self.assertTrue(all(
+            strip_analysis._label_text(segment).endswith(' OK')
+            for segment in passed.segments))
+        self.assertTrue(all(
+            strip_analysis._label_text(segment).endswith(' FAIL')
+            for segment in failed.segments))
+        self.assertEqual(strip_analysis._segment_color(passed.segments[0]),
+                         strip_analysis.PASS_COLOR)
+        self.assertEqual(strip_analysis._segment_color(failed.segments[0]),
+                         strip_analysis.FAIL_COLOR)
+
+    def test_analyze_detection_applies_the_requested_width_limit(self):
+        measurement = sam_detection.analyze_detection(
+            [sam_detection.Polygon('strip', 0.9, self.ring())],
+            CAMERA_FRAME, 10, _DoublingScale(), 4.0, 1.0)
+        record = sam_detection.strip_record(measurement)
+
+        self.assertEqual(record['target_width_mm'], 4.0)
+        self.assertEqual(record['width_tolerance_mm'], 1.0)
+        self.assertFalse(record['within_tolerance'])
+        self.assertTrue(all(
+            segment['within_tolerance'] is False
+            for segment in record['segments']))
 
     def test_metric_record_carries_both_units(self):
         metric = sam_detection.analyze_detection(
@@ -355,6 +389,16 @@ class DrawAnalysisTests(unittest.TestCase):
         with_measurement = sam_detection.draw_analysis(crop, [polygon], None)
         self.assertEqual(with_measurement.shape, crop.shape)
         self.assertGreater(int(np.count_nonzero(with_measurement)), 0)
+
+    def test_inspection_overlay_does_not_draw_the_detection_class_name(self):
+        crop = np.zeros((552, 2208, 3), np.uint8)
+        polygon = sam_detection.Polygon(
+            'adhesive strip', 0.9,
+            np.array([[10, 10], [400, 10], [400, 60], [10, 60]], np.int32))
+        with patch.object(sam_detection.cv2, 'putText') as put_text:
+            sam_detection.draw_analysis(crop, [polygon], None)
+
+        put_text.assert_not_called()
 
 
 if __name__ == '__main__':

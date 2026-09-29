@@ -116,12 +116,13 @@ class IndustrialDashboard:
         self.maximized_camera = None  # None, 1, or 2
 
         # --- settings variables ---
-        self.n_segments_var = tk.IntVar(value=CONFIG['inspection']['segments'])
         self.size_var = tk.StringVar()
-        self.len_threshold_var = tk.StringVar(value=CONFIG['inspection']['length_tolerance'])
-        self.wid_threshold_var = tk.StringVar(value=CONFIG['inspection']['width_tolerance'])
-        self.strip_width_var = tk.StringVar(value="2")
-        self.enable_check_var = tk.BooleanVar(value=True)
+        self.strip_width_var = tk.StringVar(
+            value=f"{float(CONFIG['inspection']['strip_width_mm']):g}")
+        self.strip_width_tolerance_var = tk.StringVar(
+            value=f"{float(CONFIG['inspection']['strip_width_tolerance_mm']):g}")
+        self.result_display_seconds_var = tk.StringVar(
+            value=f"{float(CONFIG['inspection'].get('result_display_seconds', 5.0)):g}")
 
         # Set default size
         self.size_var.set(CONFIG['inspection']['default_size'])
@@ -129,11 +130,11 @@ class IndustrialDashboard:
 
         # --- active (saved) values used during detection ---
         self.active_size = self.size_var.get()
-        self.active_len_threshold = self.len_threshold_var.get()
-        self.active_wid_threshold = self.wid_threshold_var.get()
-        self.active_segments = self.n_segments_var.get()
         self.active_strip_width = self._validate_strip_width(self.strip_width_var.get())
-        self.active_enable_check = self.enable_check_var.get()
+        self.active_strip_width_tolerance = self._validate_strip_width_tolerance(
+            self.strip_width_tolerance_var.get())
+        self.active_result_display_seconds = self._validate_result_display_seconds(
+            self.result_display_seconds_var.get())
         self.session_start_time = ""
 
         # --- serial communication ---
@@ -141,6 +142,13 @@ class IndustrialDashboard:
         self.serial_lock = threading.Lock()
         self.inspection_busy = False
         self._serial_pending_side = None
+        self._active_inspection_side = None
+        self._result_timer_job = None
+        self._result_timer_active = False
+        self._result_timer_paused = False
+        self._result_timer_remaining = 0.0
+        self._result_timer_last_tick = None
+        self._result_sequence_index = 0
         self._init_serial()
 
         # --- window chrome ---
@@ -206,6 +214,12 @@ class IndustrialDashboard:
 
     def _handle_serial_button(self, side):
         if getattr(self, 'inspection_busy', False):
+            if (getattr(self, '_result_timer_active', False)
+                    and side == getattr(self, '_active_inspection_side', None)):
+                self.toggle_result_timer()
+                state = "PAUSED" if getattr(self, '_result_timer_paused', False) else "PLAYING"
+                self._send_serial_status(f"{side}_{state}")
+                return
             self._send_serial_status(f"{side}_BUSY")
             return
         camera = self.camera1 if side == "L" else self.camera2
@@ -226,16 +240,23 @@ class IndustrialDashboard:
     def _validate_strip_width(self, value):
         try:
             w = float(value)
-            return w if w > 0 else 2.0
+            return w if w > 0 else 4.0
         except (ValueError, TypeError):
-            return 2.0
+            return 4.0
 
-    def _parse_tolerance(self, tol_string, default=1.0):
-        """Parse tolerance string like '± 1mm' to float value"""
+    def _validate_strip_width_tolerance(self, value):
         try:
-            return float(tol_string.replace("±", "").replace("mm", "").strip())
-        except (ValueError, AttributeError):
-            return default
+            tolerance = float(value)
+            return tolerance if tolerance > 0 else 1.0
+        except (ValueError, TypeError):
+            return 1.0
+
+    def _validate_result_display_seconds(self, value):
+        try:
+            seconds = float(value)
+            return seconds if seconds > 0 else 5.0
+        except (ValueError, TypeError):
+            return 5.0
 
     # ==============================================================
     # title-bar / window management
@@ -261,6 +282,7 @@ class IndustrialDashboard:
 
     def close_application(self):
         self._closing = True
+        self._cancel_result_timer()
         for future in getattr(self, '_camera_futures', []):
             def release_when_ready(done):
                 if not done.cancelled() and done.exception() is None:
@@ -418,7 +440,7 @@ class IndustrialDashboard:
         tk.Label(size_card, text="Size & limits", fg=C["text"], bg=C["card"],
                  font=(FONT, 22, "bold")).pack(anchor="w", padx=24)
         tk.Label(
-            size_card, text="Select the product size, allowed variation, segments, and color mask.",
+            size_card, text="Set strip width, tolerance, and result display time.",
             fg=C["muted"], bg=C["card"], font=(FONT, 11), justify=tk.LEFT,
             wraplength=430,
         ).pack(anchor="w", padx=24, pady=(8, 30))
@@ -574,7 +596,7 @@ class IndustrialDashboard:
             font=(FONT, 28, "bold"),
         ).pack(anchor="w")
         tk.Label(
-            content, text="Set the product size and allowed measurement variation.",
+            content, text="Set the adhesive-strip width, tolerance, and crop display time.",
             fg=C["muted"], bg=C["bg"], font=(FONT, 11),
         ).pack(anchor="w", pady=(4, 20))
 
@@ -599,53 +621,45 @@ class IndustrialDashboard:
         settings.pack(fill=tk.X, pady=14)
         for column in range(3):
             settings.columnconfigure(column, weight=1, uniform="limits")
-        section_label(settings, "Measurement limits").grid(
+        section_label(settings, "Inspection limits and result timing").grid(
             row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(17, 12))
 
         label_options = {"fg": C["text_soft"], "bg": C["card"], "font": (FONT, 10, "bold")}
-        tk.Label(settings, text="Length variation", **label_options).grid(row=1, column=0, sticky="w", padx=20)
-        self.len_tolerance_menu = tk.OptionMenu(
-            settings, self.len_threshold_var,
-            "± 0.5mm", "± 1mm", "± 1.5mm", "± 2mm", "± 2.5mm", "± 3mm", "± 3.5mm", "± 4mm", "± 4.5mm", "± 5mm", "± 10mm"
+        tk.Label(settings, text="Required width (mm)", **label_options).grid(
+            row=1, column=0, sticky="w", padx=20)
+        self.strip_width_entry = tk.Entry(
+            settings, textvariable=self.strip_width_var, bg=C["surface_2"],
+            fg=C["text"], insertbackground=C["text"], font=(FONT, 12),
+            relief=tk.FLAT, highlightthickness=1,
+            highlightbackground=C["border"], justify=tk.CENTER,
         )
-        self.len_tolerance_menu.config(bg=C["surface_2"], fg=C["text"], activebackground=C["card_hover"],
-                                       activeforeground=C["text"], font=(FONT, 11), relief=tk.FLAT,
-                                       highlightthickness=1, highlightbackground=C["border"], width=18)
-        self.len_tolerance_menu["menu"].config(bg=C["surface_2"], fg=C["text"], font=(FONT, 11))
-        self.len_tolerance_menu.grid(row=2, column=0, padx=20, pady=(7, 20), sticky="ew")
+        self.strip_width_entry.grid(
+            row=2, column=0, padx=20, pady=(7, 20), sticky="ew", ipady=8)
 
-        tk.Label(settings, text="Width variation", **label_options).grid(row=1, column=1, sticky="w", padx=20)
-        self.wid_tolerance_menu = tk.OptionMenu(
-            settings, self.wid_threshold_var,
-            "± 0.5mm", "± 1mm", "± 1.5mm", "± 2mm", "± 2.5mm", "± 3mm", "± 3.5mm", "± 4mm", "± 4.5mm", "± 5mm", "± 10mm"
+        tk.Label(settings, text="Allowed tolerance (± mm)", **label_options).grid(
+            row=1, column=1, sticky="w", padx=20)
+        self.strip_width_tolerance_entry = tk.Entry(
+            settings, textvariable=self.strip_width_tolerance_var,
+            bg=C["surface_2"], fg=C["text"], insertbackground=C["text"],
+            font=(FONT, 12), relief=tk.FLAT, highlightthickness=1,
+            highlightbackground=C["border"], justify=tk.CENTER,
         )
-        self.wid_tolerance_menu.config(bg=C["surface_2"], fg=C["text"], activebackground=C["card_hover"],
-                                       activeforeground=C["text"], font=(FONT, 11), relief=tk.FLAT,
-                                       highlightthickness=1, highlightbackground=C["border"], width=18)
-        self.wid_tolerance_menu["menu"].config(bg=C["surface_2"], fg=C["text"], font=(FONT, 11))
-        self.wid_tolerance_menu.grid(row=2, column=1, padx=20, pady=(7, 20), sticky="ew")
+        self.strip_width_tolerance_entry.grid(
+            row=2, column=1, padx=20, pady=(7, 20), sticky="ew", ipady=8)
 
-        tk.Label(settings, text="Measurement segments", **label_options).grid(row=1, column=2, sticky="w", padx=20)
-        self.segments_combo = ttk.Combobox(
-            settings,
-            values=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"],
-            state="readonly",
-            font=(FONT, 11), style="App.TCombobox",
+        tk.Label(settings, text="Crop display time (seconds)", **label_options).grid(
+            row=1, column=2, sticky="w", padx=20)
+        self.result_display_seconds_entry = tk.Entry(
+            settings, textvariable=self.result_display_seconds_var,
+            bg=C["surface_2"], fg=C["text"], insertbackground=C["text"],
+            font=(FONT, 12), relief=tk.FLAT, highlightthickness=1,
+            highlightbackground=C["border"], justify=tk.CENTER,
         )
-        self.segments_combo.set(str(self.n_segments_var.get()))
-        self.segments_combo.grid(row=2, column=2, padx=20, pady=(7, 20), sticky="ew")
-        self.segments_combo.bind("<<ComboboxSelected>>", lambda e: self.n_segments_var.set(int(self.segments_combo.get())))
+        self.result_display_seconds_entry.grid(
+            row=2, column=2, padx=20, pady=(7, 20), sticky="ew", ipady=8)
 
         footer = tk.Frame(content, bg=C["bg"])
         footer.pack(fill=tk.X, pady=(4, 0))
-        check = tk.Checkbutton(
-            footer, text="Use PASS / FAIL checking",
-            variable=self.enable_check_var,
-            bg=C["bg"], fg=C["text_soft"], activebackground=C["bg"],
-            activeforeground=C["text"], selectcolor=C["surface_2"],
-            font=(FONT, 11, "bold"), bd=0, highlightthickness=0,
-        )
-        check.pack(side=tk.LEFT)
         themed_button(footer, "CROP SETUP", self.open_crop_setup_window,
                       role="purple", width=13).pack(side=tk.RIGHT, padx=(8, 0))
         themed_button(footer, "SAVE PROFILE", self.save_settings,
@@ -662,17 +676,19 @@ class IndustrialDashboard:
     def save_settings(self):
         strip_value = self.strip_width_var.get()
         validated_width = self._validate_strip_width(strip_value)
-
-        if hasattr(self, 'segments_combo'):
-            self.n_segments_var.set(int(self.segments_combo.get()))
+        tolerance_value = self.strip_width_tolerance_var.get()
+        validated_tolerance = self._validate_strip_width_tolerance(tolerance_value)
+        display_seconds = self._validate_result_display_seconds(
+            self.result_display_seconds_var.get())
+        self.strip_width_var.set(f"{validated_width:g}")
+        self.strip_width_tolerance_var.set(f"{validated_tolerance:g}")
+        self.result_display_seconds_var.set(f"{display_seconds:g}")
 
         # Commit to active values
         self.active_size              = self.size_var.get()
-        self.active_len_threshold     = self.len_threshold_var.get()
-        self.active_wid_threshold     = self.wid_threshold_var.get()
-        self.active_segments          = self.n_segments_var.get()
         self.active_strip_width       = validated_width
-        self.active_enable_check      = self.enable_check_var.get()
+        self.active_strip_width_tolerance = validated_tolerance
+        self.active_result_display_seconds = display_seconds
 
         # Refresh bottom-panel display
         self.lbl_large_size.config(text=self.active_size)
@@ -1521,19 +1537,19 @@ class IndustrialDashboard:
         view.update_crop(crop_index, image, busy)
 
     def _present_detection_result(self, camera_num, crops):
-        """Main thread: show the crops and hold them until the operator resumes."""
+        """Main thread: show crops while their completed overlays are prepared."""
         if self.result_view is None:
             self.result_view = CropResultView(
-                self.image_panel, self.start_live_preview,
+                self.image_panel, self.toggle_result_timer,
                 title=f"CAMERA {camera_num} RESULT",
             )
         self.images_container.pack_forget()
         self.result_view.pack(side=tk.TOP, **self.images_container_pack_opts)
         self.result_view.show_crops(crops, self._first_uploading_crop(camera_num))
-        # The result is on screen before the upload starts, so the button waits
-        # for _inspection_worker_done: releasing inspection_busy now would let a
-        # second inspection run alongside the worker still in _detect_crops.
-        self.result_view.set_resume_enabled(False)
+        # The automatic sequence starts in _inspection_worker_done, after every
+        # requested overlay has arrived. Until then the visible crop may carry
+        # the upload spinner, but the configured display time is not consumed.
+        self.result_view.prepare_transition()
         self.set_pass_fail("RESULT")
         # Report here rather than at the resume press: the ESP32 gives the
         # inspection 60 seconds from its ACK, after which it turns red and
@@ -1550,6 +1566,7 @@ class IndustrialDashboard:
 
     def _dismiss_result_view(self):
         """Put the dual camera view back in place of the result."""
+        self._cancel_result_timer()
         if self.result_view is None:
             return
         self.result_view.pack_forget()
@@ -1558,7 +1575,7 @@ class IndustrialDashboard:
         self.images_container.pack(**self.images_container_pack_opts)
 
     def start_live_preview(self):
-        """The START LIVE PREVIEW button: drop the result and resume the feed."""
+        """Finish the automatic result sequence and resume the live feed."""
         self._dismiss_result_view()
         self.restore_dual_view()
         # The paused preview loop is still armed, so _finish_detection is all it
@@ -1567,14 +1584,133 @@ class IndustrialDashboard:
         self._finish_detection()
 
     def _inspection_worker_done(self):
-        """Queued from the detection thread's finally: the button may go live."""
+        """Queued from the worker: start Crop 1 -> Crop 2 -> Live timing."""
         view = getattr(self, 'result_view', None)
         if view is None or not view.winfo_exists():
             return
         # A crop whose upload raised never publishes busy=False, and one dropped
         # by the generation guard never arrives at all, so clear what is left.
         view.mark_all_idle()
-        view.set_resume_enabled(True)
+        self._start_result_sequence()
+
+    def _result_display_duration(self):
+        value = getattr(
+            self, 'active_result_display_seconds',
+            CONFIG['inspection'].get('result_display_seconds', 5.0),
+        )
+        return self._validate_result_display_seconds(value)
+
+    def _start_result_sequence(self):
+        view = getattr(self, 'result_view', None)
+        if view is None or not view.winfo_exists():
+            return
+        self._cancel_result_timer()
+        self._result_timer_active = True
+        self._result_timer_paused = False
+        self._result_sequence_index = 0
+        self._result_timer_remaining = self._result_display_duration()
+        self._result_timer_last_tick = time.monotonic()
+        view.show_transition(
+            self._result_sequence_index,
+            math.ceil(self._result_timer_remaining),
+            paused=False,
+        )
+        self._schedule_result_timer_tick()
+
+    def _schedule_result_timer_tick(self):
+        if (getattr(self, '_result_timer_active', False)
+                and not getattr(self, '_result_timer_paused', False)):
+            self._result_timer_job = self.root.after(100, self._result_timer_tick)
+
+    def _result_timer_tick(self):
+        self._result_timer_job = None
+        if (not getattr(self, '_result_timer_active', False)
+                or getattr(self, '_result_timer_paused', False)):
+            return
+        now = time.monotonic()
+        previous = getattr(self, '_result_timer_last_tick', None)
+        self._result_timer_last_tick = now
+        if previous is not None:
+            self._result_timer_remaining -= max(0.0, now - previous)
+        if self._result_timer_remaining <= 0:
+            self._advance_result_sequence()
+            return
+        view = getattr(self, 'result_view', None)
+        if view is None or not view.winfo_exists():
+            self._cancel_result_timer()
+            return
+        view.show_transition(
+            self._result_sequence_index,
+            math.ceil(self._result_timer_remaining),
+            paused=False,
+        )
+        self._schedule_result_timer_tick()
+
+    def _advance_result_sequence(self):
+        if self._result_sequence_index == 0:
+            self._result_sequence_index = 1
+            self._result_timer_remaining = self._result_display_duration()
+            self._result_timer_last_tick = time.monotonic()
+            view = getattr(self, 'result_view', None)
+            if view is None or not view.winfo_exists():
+                self._cancel_result_timer()
+                return
+            view.show_transition(
+                1, math.ceil(self._result_timer_remaining), paused=False,
+            )
+            self._schedule_result_timer_tick()
+            return
+        self.start_live_preview()
+
+    def toggle_result_timer(self):
+        """Pause/play the current crop hold from UI or the matching ESP32."""
+        if not getattr(self, '_result_timer_active', False):
+            return
+        view = getattr(self, 'result_view', None)
+        if view is None or not view.winfo_exists():
+            self._cancel_result_timer()
+            return
+        if getattr(self, '_result_timer_paused', False):
+            self._result_timer_paused = False
+            self._result_timer_last_tick = time.monotonic()
+            view.show_transition(
+                self._result_sequence_index,
+                math.ceil(self._result_timer_remaining),
+                paused=False,
+            )
+            self._schedule_result_timer_tick()
+            return
+
+        now = time.monotonic()
+        previous = getattr(self, '_result_timer_last_tick', None)
+        if previous is not None:
+            self._result_timer_remaining -= max(0.0, now - previous)
+        job = getattr(self, '_result_timer_job', None)
+        if job is not None:
+            self.root.after_cancel(job)
+        self._result_timer_job = None
+        if self._result_timer_remaining <= 0:
+            self._advance_result_sequence()
+            return
+        self._result_timer_paused = True
+        self._result_timer_last_tick = None
+        view.show_transition(
+            self._result_sequence_index,
+            math.ceil(max(0.0, self._result_timer_remaining)),
+            paused=True,
+        )
+
+    def _cancel_result_timer(self):
+        job = getattr(self, '_result_timer_job', None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except (AttributeError, tk.TclError):
+                pass
+        self._result_timer_job = None
+        self._result_timer_active = False
+        self._result_timer_paused = False
+        self._result_timer_last_tick = None
 
     def reset_dashboard(self):
         """The RESET button: never leave a held result blocking the dashboard."""
@@ -1629,6 +1765,7 @@ class IndustrialDashboard:
 
         # Disable both detection buttons while processing
         self.inspection_busy = True
+        self._active_inspection_side = side
         self.detect_btn_L.config(state=tk.DISABLED)
         self.detect_btn_R.config(state=tk.DISABLED)
         self.video_paused = True
@@ -1725,7 +1862,7 @@ class IndustrialDashboard:
             self.root.after(0, self.update_progress, 100, " | ".join(detection_warnings))
         else:
             self.root.after(0, self.update_progress, 100,
-                            "Inspection complete — press START LIVE PREVIEW to resume")
+                            "Inspection complete — results advance automatically")
 
         print(f"Crop preprocessing completed for {cam_name} (size: {self.active_size})")
 
@@ -1807,6 +1944,12 @@ class IndustrialDashboard:
         prompt = settings['prompt']
         quality = settings['jpeg_quality']
         timeout = settings['timeout_seconds']
+        target_width_mm = getattr(
+            self, 'active_strip_width',
+            float(CONFIG['inspection']['strip_width_mm']))
+        width_tolerance_mm = getattr(
+            self, 'active_strip_width_tolerance',
+            float(CONFIG['inspection']['strip_width_tolerance_mm']))
         detected_dir = os.path.join("Dataset_capture", f"Camera{camera_num}", "Detected")
         os.makedirs(detected_dir, exist_ok=True)
         self.root.after(0, self.update_progress, 100,
@@ -1838,6 +1981,8 @@ class IndustrialDashboard:
                 measurement = sam_detection.analyze_detection(
                     detection.polygons, crop.shape, settings['strip_segments'],
                     self._strip_scale(camera_num, crop_index, frame_size, warnings),
+                    target_width_mm,
+                    width_tolerance_mm,
                 )
             if measurement is not None:
                 summary = measurement.analysis
@@ -1848,6 +1993,18 @@ class IndustrialDashboard:
                 print(f"Camera {camera_num} Crop {crop_index}: strip {length} long, "
                       f"{width} average width over "
                       f"{len(summary.segments)} segment(s)")
+                if summary.metric:
+                    passed = sum(
+                        segment.within_tolerance is True
+                        for segment in summary.segments)
+                    print(
+                        f"Camera {camera_num} Crop {crop_index}: {passed}/"
+                        f"{len(summary.segments)} segments within "
+                        f"{target_width_mm:g} ± {width_tolerance_mm:g} mm")
+                else:
+                    warnings.append(
+                        f"Crop {crop_index}: width tolerance was not checked because "
+                        "no millimetre calibration is available")
 
             overlay_saved = False
             if detection.polygons and settings['save_overlay']:
@@ -1914,8 +2071,10 @@ class IndustrialDashboard:
 
     def _finish_detection(self, completed=True):
         self._report_detection_status(completed)
+        self._cancel_result_timer()
         self.video_paused = False
         self.inspection_busy = False
+        self._active_inspection_side = None
         # Retire any progress publish still queued: the bumped generation turns
         # it into a no-op rather than a draw on a dismissed view.
         self.detection_generation = getattr(self, 'detection_generation', 0) + 1

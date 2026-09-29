@@ -16,10 +16,10 @@
   "calibration": {"photo_count": 20, "minimum_valid_photos": 10, "coverage_grid_rows": 3, "coverage_grid_columns": 3, "minimum_corners": 20, "surface_minimum_corners": 20, "camera_warning_rms_px": 1.0, "surface_maximum_rms_px": 1.5, "verification_max_rms_px": 1.0},
   "measurement_surface": {"enabled": true, "aruco_dictionary": "DICT_4X4_100", "aruco_marker_id": 0, "aruco_marker_length_mm": 25.0, "minimum_marker_side_px": 30.0, "maximum_reprojection_error_px": 2.0, "board_thickness": {"enabled": false, "thickness_mm": 2.0}},
   "serial": {"enabled": true, "port": "COM22", "baud_rate": 9600},
-  "inspection": {"sizes": ["L", "M", "S", "XL", "XS"], "default_size": "M", "length_tolerance": "± 1mm", "width_tolerance": "± 1mm", "segments": 3},
+  "inspection": {"sizes": ["L", "M", "S", "XL", "XS"], "default_size": "M", "strip_width_mm": 4.0, "strip_width_tolerance_mm": 1.0, "result_display_seconds": 5.0},
   "sam_detection": {
     "enabled": true,
-    "send_crops": {"1": [false, true], "2": [false, false]},
+    "send_crops": {"1": [true, true], "2": [true, true]},
     "prompt": "A narrow continuous adhesive strip following the curved fabric boundary.",
     "jpeg_quality": 75,
     "timeout_seconds": 30,
@@ -30,7 +30,7 @@
     "measure_in_mm": true
   },
   "region_homography": {
-    "enabled": true,
+    "enabled": false,
     "store_file": "Files/region_homographies.json",
     "board_profiles_file": "Files/board_definitions.json",
     "default_profile": "Region board 17x7",

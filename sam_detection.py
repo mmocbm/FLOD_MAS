@@ -328,7 +328,8 @@ def color_for(label: str, assigned: dict[str, tuple[int, int, int]]) -> tuple[in
     return assigned[label]
 
 
-def draw_polygons(image: np.ndarray, polygons: Sequence[Polygon]) -> np.ndarray:
+def draw_polygons(image: np.ndarray, polygons: Sequence[Polygon],
+                  show_labels: bool = True) -> np.ndarray:
     """Return a copy of ``image`` with each ring outlined, filled and labelled."""
     canvas = image.copy()
     overlay = image.copy()
@@ -342,15 +343,21 @@ def draw_polygons(image: np.ndarray, polygons: Sequence[Polygon]) -> np.ndarray:
     # One blend for all fills, so overlapping masks do not stack opaquely.
     cv2.addWeighted(overlay, 0.35, canvas, 0.65, 0, dst=canvas)
 
-    for polygon in polygons:
-        color = color_for(polygon.class_name, colors)
-        label = f"{polygon.class_name} {polygon.confidence:.2f}"
-        x, y = int(polygon.ring[:, 0].min()), int(polygon.ring[:, 1].min())
-        (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        y = max(y, text_h + baseline + 2)
-        cv2.rectangle(canvas, (x, y - text_h - baseline - 2), (x + text_w + 4, y), color, -1)
-        cv2.putText(canvas, label, (x + 2, y - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                    (255, 255, 255), 1, cv2.LINE_AA)
+    if show_labels:
+        for polygon in polygons:
+            color = color_for(polygon.class_name, colors)
+            label = f"{polygon.class_name} {polygon.confidence:.2f}"
+            x, y = int(polygon.ring[:, 0].min()), int(polygon.ring[:, 1].min())
+            (text_w, text_h), baseline = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            y = max(y, text_h + baseline + 2)
+            cv2.rectangle(
+                canvas, (x, y - text_h - baseline - 2),
+                (x + text_w + 4, y), color, -1)
+            cv2.putText(
+                canvas, label, (x + 2, y - baseline),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (255, 255, 255), 1, cv2.LINE_AA)
 
     return canvas
 
@@ -363,6 +370,8 @@ def analyze_detection(
     image_shape: Sequence[int],
     segment_count: int = 10,
     scale: "plane_scale.PlaneScale | None" = None,
+    target_width_mm: float | None = None,
+    width_tolerance_mm: float | None = None,
 ) -> StripMeasurement | None:
     """Measure the adhesive strip traced by the largest polygon.
 
@@ -384,6 +393,10 @@ def analyze_detection(
         )
         if analysis is not None and scale is not None:
             analysis = strip_analysis.to_metric(analysis, scale)
+        if (analysis is not None and target_width_mm is not None
+                and width_tolerance_mm is not None):
+            analysis = strip_analysis.grade_widths(
+                analysis, target_width_mm, width_tolerance_mm)
     except Exception:  # noqa: BLE001 - reported as "no measurement", not an error
         return None
     if analysis is None:
@@ -397,7 +410,12 @@ def draw_analysis(
     measurement: StripMeasurement | None,
 ) -> np.ndarray:
     """Outline the polygons and, when one was measured, draw the strip on top."""
-    canvas = draw_polygons(image, polygons)
+    # A measured result shows only the width segments. The detector's class name,
+    # confidence and class-coloured polygon would compete with the green/red tolerance
+    # result and can even make a passing segment appear red. Keep a quiet polygon outline
+    # only when no segment measurement could be produced.
+    canvas = (image.copy() if measurement is not None
+              else draw_polygons(image, polygons, show_labels=False))
     if measurement is not None:
         strip_analysis.draw_strip_analysis(canvas, measurement.analysis)
     return canvas
@@ -429,6 +447,13 @@ def strip_record(measurement: StripMeasurement | None) -> dict[str, Any] | None:
         "average_width_mm": _rounded(analysis.average_width_mm),
         "minimum_width_mm": _rounded(analysis.minimum_width_mm),
         "maximum_width_mm": _rounded(analysis.maximum_width_mm),
+        "target_width_mm": _rounded(analysis.target_width_mm),
+        "width_tolerance_mm": _rounded(analysis.width_tolerance_mm),
+        "within_tolerance": (
+            all(segment.within_tolerance for segment in analysis.segments)
+            if any(segment.within_tolerance is not None for segment in analysis.segments)
+            else None
+        ),
         "segments": [
             {
                 "index": int(segment.index),
@@ -440,6 +465,7 @@ def strip_record(measurement: StripMeasurement | None) -> dict[str, Any] | None:
                 "average_width_mm": _rounded(segment.average_width_mm),
                 "minimum_width_mm": _rounded(segment.minimum_width_mm),
                 "maximum_width_mm": _rounded(segment.maximum_width_mm),
+                "within_tolerance": segment.within_tolerance,
                 "samples": int(segment.samples),
                 "midpoint": {
                     "x": round(float(segment.midpoint[0]), 3),

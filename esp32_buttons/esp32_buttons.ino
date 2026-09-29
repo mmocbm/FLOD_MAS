@@ -80,7 +80,7 @@ void updateButton(Side &side, unsigned long now) {
     side.stable = raw;
     if (raw == HIGH) {
       side.armed = now - startedAt >= STARTUP_GUARD_MS;
-    } else if (side.armed && side.phase == IDLE &&
+    } else if (side.armed && side.phase != WAITING &&
                now - startedAt >= STARTUP_GUARD_MS) {
       side.armed = false;
       startRequest(side);
@@ -125,6 +125,10 @@ void handleCommand(const char *command) {
     side.phaseStartedAt = millis();
   } else if (strcmp(action, "DONE") == 0) {
     showResult(side, 0, 0, 255);  // Blue: completed; no PASS/FAIL decision.
+  } else if (strcmp(action, "PAUSED") == 0) {
+    showResult(side, 255, 150, 0);  // Amber: result countdown paused.
+  } else if (strcmp(action, "PLAYING") == 0) {
+    showResult(side, 0, 180, 255);  // Cyan: result countdown running.
   } else if (strcmp(action, "PASS") == 0) {
     showResult(side, 0, 255, 0);  // Reserved for a real PASS result.
   } else if (strcmp(action, "BUSY") == 0) {

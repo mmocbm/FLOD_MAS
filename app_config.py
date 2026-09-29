@@ -110,6 +110,11 @@ for key in ('aruco_marker_length_mm', 'minimum_marker_side_px',
         raise ValueError(f"Measurement surface {key} must be positive")
 if CONFIG['inspection']['default_size'] not in CONFIG['inspection']['sizes']:
     raise ValueError("Default size must be in the configured size list")
+for key in ('strip_width_mm', 'strip_width_tolerance_mm', 'result_display_seconds'):
+    value = CONFIG['inspection'].get(key)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or value <= 0):
+        raise ValueError(f"Inspection {key} must be a positive number")
 sam = CONFIG.get('sam_detection', {})
 if not isinstance(sam.get('enabled'), bool):
     raise ValueError("SAM detection enabled must be true or false")

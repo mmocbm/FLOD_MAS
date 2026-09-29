@@ -1,8 +1,8 @@
 """Hardware-free check of the tabbed, zoomable inspection result view.
 
 Collected tests never open a window, so the widget itself is exercised here: two
-crops in two tabs, per-tab zoom and pan, the uploading tab's arc, and the resume
-button staying greyed until the worker says it is done.
+crops in two tabs, per-tab zoom and pan, the uploading tab's arc, and the timed
+transition's pause/play control.
 """
 
 import sys
@@ -42,8 +42,8 @@ def run():
         app = main.IndustrialDashboard(root, lambda: None)
         root.update()
 
-        opened = []
-        view = CropResultView(app.image_panel, lambda: opened.append(True))
+        toggles = []
+        view = CropResultView(app.image_panel, lambda: toggles.append(True))
         app.images_container.pack_forget()
         view.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(10, 6))
         view.show_crops(crops())
@@ -94,15 +94,21 @@ def run():
         root.update()
         assert abs(view._tabs[0]['zoom'] - 1.0) < 1e-9, view._tabs[0]['zoom']
 
-        # The operator cannot resume until the detection thread has finished.
-        assert str(view._resume_button.cget('state')) == tk.DISABLED
-        view._resume_button.invoke()
-        assert opened == [], 'a disabled resume button must not fire'
-        app.result_view = view
-        app._inspection_worker_done()
-        assert str(view._resume_button.cget('state')) == tk.NORMAL
-        view._resume_button.invoke()
-        assert opened == [True], opened
+        # The timer control stays locked while overlays are being prepared,
+        # then displays both the countdown and pause/play state.
+        view.prepare_transition()
+        assert str(view._pause_button.cget('state')) == tk.DISABLED
+        view._pause_button.invoke()
+        assert toggles == [], 'a disabled pause button must not fire'
+        view.show_transition(0, 5, paused=False)
+        assert str(view._pause_button.cget('state')) == tk.NORMAL
+        assert view._pause_button.cget('text') == 'PAUSE'
+        assert 'CROP 2 IN' in view._countdown_label.cget('text')
+        view._pause_button.invoke()
+        assert toggles == [True], toggles
+        view.show_transition(1, 4, paused=True)
+        assert view._pause_button.cget('text') == 'PLAY'
+        assert 'PAUSED' in view._countdown_label.cget('text')
 
         # Animating must never create a second timer.
         assert not root.tk.call('after', 'info'), 'the view must not schedule its own timer'

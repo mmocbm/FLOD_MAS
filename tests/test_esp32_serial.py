@@ -17,6 +17,8 @@ class Esp32SerialTests(unittest.TestCase):
         app.camera2 = SimpleNamespace(calibration_available=True)
         app.inspection_busy = False
         app._serial_pending_side = None
+        app._active_inspection_side = None
+        app._result_timer_active = False
         app.start_detect_thread = MagicMock(return_value=True)
         return app
 
@@ -48,6 +50,44 @@ class Esp32SerialTests(unittest.TestCase):
         app._handle_serial_button('R')
 
         app.start_detect_thread.assert_not_called()
+        app.serial_conn.write.assert_called_once_with(b'R_BUSY\n')
+
+    def test_matching_button_toggles_the_result_timer(self):
+        app = self.make_app()
+        app.inspection_busy = True
+        app._result_timer_active = True
+        app._active_inspection_side = 'R'
+        app.toggle_result_timer = MagicMock(
+            side_effect=lambda: setattr(app, '_result_timer_paused', True))
+
+        app._handle_serial_button('R')
+
+        app.toggle_result_timer.assert_called_once_with()
+        app.serial_conn.write.assert_called_once_with(b'R_PAUSED\n')
+
+    def test_matching_button_reports_when_timer_resumes(self):
+        app = self.make_app()
+        app.inspection_busy = True
+        app._result_timer_active = True
+        app._result_timer_paused = True
+        app._active_inspection_side = 'L'
+        app.toggle_result_timer = MagicMock(
+            side_effect=lambda: setattr(app, '_result_timer_paused', False))
+
+        app._handle_serial_button('L')
+
+        app.serial_conn.write.assert_called_once_with(b'L_PLAYING\n')
+
+    def test_other_button_remains_busy_during_the_result_timer(self):
+        app = self.make_app()
+        app.inspection_busy = True
+        app._result_timer_active = True
+        app._active_inspection_side = 'L'
+        app.toggle_result_timer = MagicMock()
+
+        app._handle_serial_button('R')
+
+        app.toggle_result_timer.assert_not_called()
         app.serial_conn.write.assert_called_once_with(b'R_BUSY\n')
 
     def test_missing_calibration_rejects_request(self):

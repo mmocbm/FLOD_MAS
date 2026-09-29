@@ -37,6 +37,8 @@ CENTERLINE_HALO = (0, 0, 0)
 TICK_COLOR = (0, 255, 255)
 LABEL_TEXT_COLOR = (255, 255, 255)
 LABEL_BACKGROUND = (32, 32, 32)
+PASS_COLOR = (65, 190, 65)       # BGR green
+FAIL_COLOR = (45, 45, 230)       # BGR red
 LABEL_OFFSET_PX = 24.0
 LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
 LABEL_SCALE = 0.5
@@ -63,6 +65,7 @@ class Segment:
     average_width_mm: float | None = None
     minimum_width_mm: float | None = None
     maximum_width_mm: float | None = None
+    within_tolerance: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,8 @@ class StripAnalysis:
     average_width_px: float
     total_length_mm: float | None = None
     average_width_mm: float | None = None
+    target_width_mm: float | None = None
+    width_tolerance_mm: float | None = None
 
     @property
     def minimum_width_px(self) -> float:
@@ -148,6 +153,33 @@ def to_metric(analysis: StripAnalysis, scale) -> StripAnalysis:
         segments=segments,
         total_length_mm=total_length_mm,
         average_width_mm=float(widths_mm.mean()),
+    )
+
+
+def grade_widths(analysis: StripAnalysis, target_width_mm: float,
+                 tolerance_mm: float) -> StripAnalysis:
+    """Grade every segment's average metric width against one inclusive range."""
+    target = float(target_width_mm)
+    tolerance = float(tolerance_mm)
+    if not np.isfinite(target) or target <= 0:
+        raise ValueError("Target strip width must be a positive number")
+    if not np.isfinite(tolerance) or tolerance <= 0:
+        raise ValueError("Strip width tolerance must be a positive number")
+    if not analysis.metric:
+        return replace(
+            analysis, target_width_mm=target, width_tolerance_mm=tolerance)
+    low, high = target - tolerance, target + tolerance
+    return replace(
+        analysis,
+        segments=[
+            replace(segment, within_tolerance=(
+                segment.average_width_mm is not None
+                and low <= segment.average_width_mm <= high
+            ))
+            for segment in analysis.segments
+        ],
+        target_width_mm=target,
+        width_tolerance_mm=tolerance,
     )
 
 
@@ -413,8 +445,18 @@ def _place_label(segment: Segment, shape: tuple[int, ...]) -> tuple[int, int, in
 def _label_text(segment: Segment) -> str:
     """The width shown beside a segment: millimetres when known, else pixels."""
     if segment.average_width_mm is not None:
-        return f"{segment.index}: {segment.average_width_mm:.2f}mm"
-    return f"{segment.index}: {segment.average_width_px:.1f}px"
+        status = (" OK" if segment.within_tolerance is True else
+                  " FAIL" if segment.within_tolerance is False else "")
+        return f"S{segment.index} {segment.average_width_mm:.2f}mm{status}"
+    return f"S{segment.index} {segment.average_width_px:.1f}px NO MM"
+
+
+def _segment_color(segment: Segment) -> tuple[int, int, int]:
+    if segment.within_tolerance is True:
+        return PASS_COLOR
+    if segment.within_tolerance is False:
+        return FAIL_COLOR
+    return CENTERLINE_COLOR
 
 
 def draw_strip_analysis(canvas: np.ndarray, analysis: StripAnalysis) -> np.ndarray:
@@ -425,9 +467,32 @@ def draw_strip_analysis(canvas: np.ndarray, analysis: StripAnalysis) -> np.ndarr
     and each label carries its own background so it reads without covering the
     polygon.
     """
-    outline = np.round(analysis.centerline).astype(np.int32).reshape(-1, 1, 2)
-    cv2.polylines(canvas, [outline], False, CENTERLINE_HALO, 4, cv2.LINE_AA)
-    cv2.polylines(canvas, [outline], False, CENTERLINE_COLOR, 2, cv2.LINE_AA)
+    # Shade the physical span of each graded segment. This makes an out-of-tolerance
+    # section visible as a red portion of the strip, rather than only as red text.
+    graded = any(segment.within_tolerance is not None for segment in analysis.segments)
+    if graded:
+        overlay = canvas.copy()
+        for segment in analysis.segments:
+            low, high = segment.first_sample, segment.last_sample
+            points = analysis.centerline[low:high]
+            normals = analysis.normals[low:high]
+            widths = analysis.widths[low:high]
+            if len(points) < 2:
+                continue
+            half = widths[:, None] / 2.0
+            left = points - normals * half
+            right = points + normals * half
+            ring = np.round(np.vstack((left, right[::-1]))).astype(np.int32)
+            cv2.fillPoly(overlay, [ring], _segment_color(segment))
+        cv2.addWeighted(overlay, 0.28, canvas, 0.72, 0, dst=canvas)
+
+    for segment in analysis.segments:
+        points = analysis.centerline[segment.first_sample:segment.last_sample]
+        if len(points) < 2:
+            continue
+        outline = np.round(points).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(canvas, [outline], False, CENTERLINE_HALO, 5, cv2.LINE_AA)
+        cv2.polylines(canvas, [outline], False, _segment_color(segment), 3, cv2.LINE_AA)
 
     # A tick at each internal boundary, spanning the strip, marks where one
     # segment ends and the next begins.
@@ -446,7 +511,8 @@ def draw_strip_analysis(canvas: np.ndarray, analysis: StripAnalysis) -> np.ndarr
     for segment in analysis.segments:
         left, top, box_w, box_h = _place_label(segment, canvas.shape)
         cv2.rectangle(canvas, (left, top), (left + box_w, top + box_h),
-                      LABEL_BACKGROUND, -1)
+                      (_segment_color(segment) if segment.within_tolerance is not None
+                       else LABEL_BACKGROUND), -1)
         cv2.putText(canvas, _label_text(segment), (left + 4, top + box_h - 5),
                     LABEL_FONT, LABEL_SCALE, LABEL_TEXT_COLOR, 1, cv2.LINE_AA)
 

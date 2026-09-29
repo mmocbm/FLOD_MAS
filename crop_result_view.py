@@ -136,11 +136,11 @@ def advance_angle(angle, elapsed):
 
 
 class CropResultView(tk.Frame):
-    """Two crop tabs over a wheel-zoomable, draggable canvas."""
+    """Two automatically sequenced crops over a zoomable, draggable canvas."""
 
-    def __init__(self, parent, on_resume, title="INSPECTION RESULT"):
+    def __init__(self, parent, on_toggle_pause, title="INSPECTION RESULT"):
         super().__init__(parent, bg=C["bg"])
-        self._on_resume = on_resume
+        self._on_toggle_pause = on_toggle_pause
         self._title = title
         self._tabs = []
         self._tab_buttons = []
@@ -171,11 +171,17 @@ class CropResultView(tk.Frame):
             tab.pack(side=tk.LEFT, padx=(0, 6))
             self._tab_buttons.append(tab)
 
-        self._resume_button = themed_button(
-            header, "START LIVE PREVIEW", self._on_resume,
+        self._pause_button = themed_button(
+            header, "PAUSE", self._on_toggle_pause,
             role="primary", font_size=10, padx=16, pady=6, state=tk.DISABLED,
         )
-        self._resume_button.pack(side=tk.RIGHT)
+        self._pause_button.pack(side=tk.RIGHT)
+
+        self._countdown_label = tk.Label(
+            header, text="PREPARING OVERLAYS", bg=C["bg"], fg=C["accent"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        self._countdown_label.pack(side=tk.RIGHT, padx=(8, 14))
 
         themed_button(header, "RESET", self.reset_view, role="quiet",
                       font_size=10, padx=10, pady=6).pack(side=tk.RIGHT, padx=(0, 6))
@@ -269,10 +275,24 @@ class CropResultView(tk.Frame):
         self._refresh_tab_labels()
         self._render()
 
-    def set_resume_enabled(self, enabled):
-        self._resume_button.configure(
-            state=tk.NORMAL if enabled else tk.DISABLED,
+    def prepare_transition(self):
+        """Lock manual crop switching while completed overlays are prepared."""
+        for button in self._tab_buttons:
+            button.configure(state=tk.DISABLED)
+        self._pause_button.configure(state=tk.DISABLED, text="PAUSE")
+        self._countdown_label.configure(text="PREPARING OVERLAYS")
+
+    def show_transition(self, crop_index, seconds, paused=False):
+        """Show one crop and its automatic-transition countdown."""
+        self.select_tab(crop_index)
+        for button in self._tab_buttons:
+            button.configure(state=tk.DISABLED)
+        self._pause_button.configure(
+            state=tk.NORMAL, text="PLAY" if paused else "PAUSE",
         )
+        destination = "LIVE" if crop_index >= len(self._tabs) - 1 else f"CROP {crop_index + 2}"
+        prefix = "PAUSED" if paused else f"{destination} IN"
+        self._countdown_label.configure(text=f"{prefix}  {max(0, int(seconds))}s")
 
     # ------------------------------------------------------------------
     # tab bookkeeping

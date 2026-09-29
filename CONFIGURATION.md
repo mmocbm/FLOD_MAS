@@ -143,7 +143,9 @@ before the view is restored, so the operator sees a progress line while it works
   JSON result beside the saved crops.
 - `analyze_strip`: whether to measure the adhesive strip. When true, the largest
   returned polygon is treated as the strip and a centreline, ten segment
-  boundaries and a width label per segment are drawn on the overlay.
+  boundaries and a width label per segment are drawn on the overlay. A measured result
+  shows only these segments; detector polygons, class names and confidence values are
+  deliberately omitted from the inspection overlay.
 - `strip_segments`: how many equal-length segments to cut the strip into. Ten by
   default. More segments give finer resolution along the strip and shorter spans
   to average over, so the per-segment figures get noisier.
@@ -175,9 +177,24 @@ single factor, because a pixel is **not** a fixed number of millimetres across a
 projected crop. The `mm_per_pixel` figure is a summary at the crop centre, not a
 constant.
 
-The overlay then shows `3: 3.10mm`. The JSON keeps the pixel figures alongside the
+The overlay then shows a label such as `S3 3.10mm`. The JSON keeps the pixel figures alongside the
 millimetre ones: they are what the scale was applied to, so they make a
 millimetre value auditable and let it be recomputed if a calibration changes.
+
+The Settings page supplies `inspection.strip_width_mm` (default `4.0`) and
+`inspection.strip_width_tolerance_mm` (default `1.0`). Each segment's average width
+is checked inclusively against `target ± tolerance`. A passing segment is shaded and
+labelled green; a failing segment is shaded and labelled red. Labels contain only the
+segment number, measured width in millimetres and `OK`/`FAIL`, for example
+`S3 4.10mm OK`. When no millimetre calibration is available, the overlay reports
+pixels with `NO MM` and does not claim a tolerance result.
+
+After detection finishes, the dashboard automatically shows Crop 1 for
+`inspection.result_display_seconds` (default `5.0` seconds), then Crop 2 for the
+same time, and then resumes the dual live preview. The header shows the remaining
+seconds. **PAUSE/PLAY** freezes or resumes that countdown; during this result
+sequence the physical ESP32 button for the inspected side performs the same toggle.
+The opposite-side button continues to receive `BUSY`.
 
 This measures the plane, so it is only valid for a strip lying **on** that plane.
 A strip standing proud of it, a moved camera, or a re-aimed camera all invalidate
@@ -465,7 +482,8 @@ crop points through the region homography.
 ## Other settings
 
 - `serial`: Arduino connection enabled, port and baud rate.
-- `inspection`: selectable sizes, starting size, tolerances and segment count.
+- `inspection`: selectable sizes, starting size, required strip width in millimetres,
+  allowed plus/minus width tolerance, and result display time per crop.
 - `color_mask`: legacy values retained for the standalone colour-mask helper; the
   dashboard's new crop workflow does not use them.
 
