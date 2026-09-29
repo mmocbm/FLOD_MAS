@@ -22,7 +22,7 @@ Python replies with line-terminated commands for the same side:
 | `L_PAUSED` / `R_PAUSED` | Amber | Result countdown paused |
 | `L_PLAYING` / `R_PLAYING` | Cyan | Result countdown resumed |
 | `L_NOT_READY` / `R_NOT_READY` | Red | Camera or calibration not ready |
-| `L_BUSY` / `R_BUSY` | Purple | Another inspection is running |
+| `L_BUSY` / `R_BUSY` | Purple | That same side is already running |
 | `L_ERROR` / `R_ERROR` | Red | Inspection failed |
 
 `L_PASS`, `R_PASS`, `L_FAIL`, and `R_FAIL` are reserved in the sketch for a
@@ -36,6 +36,8 @@ another request. While results are being shown, pressing the inspected side's
 button sends the same request again; the dashboard interprets it as pause/play
 and acknowledges the new timer state. It does not block with `delay()` or
 `readStringUntil()`.
+The opposite-side button remains available, so its camera can capture and analyse
+in the background while the current side is running or showing defect crops.
 If false presses persist, watch the terminal for unsolicited `LeftCheck` or
 `RightCheck` and inspect button wiring, common ground, and LED power. For long
 button wires, stronger external pull-ups and cable routing away from LED power

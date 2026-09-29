@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 import numpy as np
@@ -52,10 +53,11 @@ class DetectCropsTests(unittest.TestCase):
         images = crops()
         with patch.dict(main.CONFIG['sam_detection'], {'enabled': False}), \
                 patch.object(sam_detection, 'detect_crop') as detect:
-            display, warnings = app._detect_crops(1, 'ts', images)
+            display, warnings, defects = app._detect_crops(1, 'ts', images)
 
         detect.assert_not_called()
         self.assertEqual(warnings, [])
+        self.assertEqual(defects, [])
         self.assertIs(display[0], images[0])
         self.assertIs(display[1], images[1])
 
@@ -87,9 +89,10 @@ class DetectCropsTests(unittest.TestCase):
                 patch.object(main.cv2, 'imwrite', return_value=True) as imwrite, \
                 patch('builtins.open', mock_open()) as opener, \
                 patch.object(main.json, 'dump') as dump:
-            display, warnings = app._detect_crops(1, 'ts', images)
+            display, warnings, defects = app._detect_crops(1, 'ts', images)
 
         self.assertEqual(warnings, [])
+        self.assertEqual(defects, [])
         self.assertEqual(imwrite.call_count, 1)          # the overlay
         self.assertIsNot(display[0], images[0])          # annotated swapped in
         self.assertIs(display[1], images[1])             # other crop untouched
@@ -118,9 +121,10 @@ class DetectCropsTests(unittest.TestCase):
                 patch.object(main.cv2, 'imwrite', return_value=True), \
                 patch('builtins.open', mock_open()), \
                 patch.object(main.json, 'dump') as dump:
-            display, warnings = app._detect_crops(1, 'ts', images)
+            display, warnings, defects = app._detect_crops(1, 'ts', images)
 
         self.assertEqual(len(warnings), 1)
+        self.assertEqual(defects, [])
         self.assertIn('width tolerance was not checked', warnings[0])
         record = dump.call_args[0][0]
         self.assertEqual(len(record['strip']['segments']), 10)
@@ -147,6 +151,42 @@ class DetectCropsTests(unittest.TestCase):
 
         self.assertIsNone(dump.call_args[0][0]['strip'])
 
+    def test_only_crop_with_failed_metric_segment_is_selected_for_preview(self):
+        app = make_app()
+        app._strip_scale = MagicMock(return_value=object())
+        images = crops()
+        detection = sam_detection.CropDetection(
+            [sam_detection.Polygon('strip', 0.9, ring())], 1234,
+        )
+        passed = SimpleNamespace(within_tolerance=True)
+        failed = SimpleNamespace(within_tolerance=False)
+
+        def measurement(segments):
+            analysis = SimpleNamespace(
+                metric=True, segments=segments, total_length_mm=20.0,
+                total_length_px=200.0, average_width_mm=4.0,
+                average_width_px=40.0,
+            )
+            return SimpleNamespace(analysis=analysis)
+
+        settings = {
+            'enabled': True, 'send_crops': {'1': [True, True]},
+            'analyze_strip': True, 'save_overlay': True,
+            'save_polygons': False,
+        }
+        with patch.dict(main.CONFIG['sam_detection'], settings), \
+                patch.object(sam_detection, 'detect_crop', return_value=detection), \
+                patch.object(sam_detection, 'analyze_detection',
+                             side_effect=[measurement([passed]), measurement([failed])]), \
+                patch.object(sam_detection, 'draw_analysis',
+                             side_effect=lambda image, *_args: image.copy()), \
+                patch.object(main.os, 'makedirs'), \
+                patch.object(main.cv2, 'imwrite', return_value=True):
+            _display, warnings, defects = app._detect_crops(1, 'ts', images)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(defects, [2])
+
     def test_failure_warns_keeps_raw_crop_and_still_records(self):
         app = make_app()
         images = crops()
@@ -158,9 +198,10 @@ class DetectCropsTests(unittest.TestCase):
                 patch.object(main.cv2, 'imwrite', return_value=True) as imwrite, \
                 patch('builtins.open', mock_open()), \
                 patch.object(main.json, 'dump') as dump:
-            display, warnings = app._detect_crops(1, 'ts', images)
+            display, warnings, defects = app._detect_crops(1, 'ts', images)
 
         self.assertEqual(imwrite.call_count, 0)          # no overlay for a negative
+        self.assertEqual(defects, [])
         self.assertIs(display[0], images[0])             # raw crop kept
         self.assertEqual(len(warnings), 1)
         self.assertIn('Connection refused', warnings[0])

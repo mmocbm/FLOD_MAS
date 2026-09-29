@@ -176,6 +176,25 @@ class CaptureTests(unittest.TestCase):
         undistorter.return_value.undistort.assert_called_once_with(original)
 
     @patch('camera_handler.CameraStream')
+    @patch('camera_handler.ImageUndistorter')
+    def test_inspection_snapshot_does_not_replace_preview_cache(self, undistorter, stream):
+        cached = np.ones((3, 3, 3), dtype=np.uint8)
+        latest = np.full((3, 3, 3), 2, dtype=np.uint8)
+        corrected = np.full((3, 3, 3), 3, dtype=np.uint8)
+        stream.return_value.read.return_value = True, latest
+        undistorter.return_value.undistort.return_value = corrected
+        handler = CameraHandler(CONFIG['cameras'][0]['index'], 'test.json')
+        handler.current_frame_raw = cached
+
+        ok, raw, result = handler.capture_snapshot()
+
+        self.assertTrue(ok)
+        self.assertIs(handler.current_frame_raw, cached)
+        self.assertIsNot(raw, latest)
+        np.testing.assert_array_equal(raw, latest)
+        self.assertIs(result, corrected)
+
+    @patch('camera_handler.CameraStream')
     @patch('camera_handler.ImageUndistorter', side_effect=FileNotFoundError('missing calibration'))
     def test_missing_calibration_keeps_camera_stream_available(self, undistorter, stream):
         handler = CameraHandler(CONFIG['cameras'][0]['index'], 'missing.json')

@@ -15,6 +15,9 @@ class InspectionAvailabilityTests(unittest.TestCase):
         app.detect_btn_R = MagicMock()
         app.set_pass_fail = MagicMock()
         app.update_progress = MagicMock()
+        app._side_busy = {'L': False, 'R': False}
+        app._serial_pending_sides = set()
+        app._active_result = None
         return app
 
     def test_only_uncalibrated_camera_inspection_is_disabled(self):
@@ -43,9 +46,19 @@ class InspectionAvailabilityTests(unittest.TestCase):
         app = self.make_app(False, True)
         app.video_paused = True
 
-        app._finish_detection()
+        app._side_busy['L'] = True
+        app._finish_detection(side='L')
 
         self.assertFalse(app.video_paused)
+        app.detect_btn_L.config.assert_called_once_with(state=tk.DISABLED)
+        app.detect_btn_R.config.assert_called_once_with(state=tk.NORMAL)
+
+    def test_busy_left_does_not_disable_ready_right(self):
+        app = self.make_app(True, True)
+        app._side_busy['L'] = True
+
+        app._refresh_inspection_availability()
+
         app.detect_btn_L.config.assert_called_once_with(state=tk.DISABLED)
         app.detect_btn_R.config.assert_called_once_with(state=tk.NORMAL)
 

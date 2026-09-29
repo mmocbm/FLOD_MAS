@@ -143,7 +143,14 @@ class IndustrialDashboard:
         self.serial_conn = None
         self.serial_lock = threading.Lock()
         self.inspection_busy = False
-        self._serial_pending_side = None
+        self._side_busy = {"L": False, "R": False}
+        self._serial_pending_sides = set()
+        self._inspection_order_counter = 0
+        self._next_result_order = 0
+        self._inspection_epoch = 0
+        self._completed_inspections = {}
+        self._result_queue = []
+        self._active_result = None
         self._active_inspection_side = None
         self._result_timer_job = None
         self._result_timer_active = False
@@ -215,13 +222,15 @@ class IndustrialDashboard:
             print(f"Serial write error ({message}): {error}")
 
     def _handle_serial_button(self, side):
-        if getattr(self, 'inspection_busy', False):
-            if (getattr(self, '_result_timer_active', False)
-                    and side == getattr(self, '_active_inspection_side', None)):
-                self.toggle_result_timer()
-                state = "PAUSED" if getattr(self, '_result_timer_paused', False) else "PLAYING"
-                self._send_serial_status(f"{side}_{state}")
-                return
+        if (getattr(self, '_result_timer_active', False)
+                and side == getattr(self, '_active_inspection_side', None)):
+            self.toggle_result_timer()
+            state = "PAUSED" if getattr(self, '_result_timer_paused', False) else "PLAYING"
+            self._send_serial_status(f"{side}_{state}")
+            return
+        side_busy = getattr(self, '_side_busy', {}).get(
+            side, getattr(self, 'inspection_busy', False))
+        if side_busy:
             self._send_serial_status(f"{side}_BUSY")
             return
         camera = self.camera1 if side == "L" else self.camera2
@@ -232,11 +241,14 @@ class IndustrialDashboard:
             return
         # Set this before starting the worker, so even a very fast failure
         # still sends its completion status to the correct button.
-        self._serial_pending_side = side
+        pending = getattr(self, '_serial_pending_sides', None)
+        if pending is None:
+            pending = self._serial_pending_sides = set()
+        pending.add(side)
         if self.start_detect_thread(side):
             self._send_serial_status(f"{side}_ACK")
         else:
-            self._serial_pending_side = None
+            pending.discard(side)
             self._send_serial_status(f"{side}_NOT_READY")
 
     def _validate_strip_width(self, value):
@@ -1374,10 +1386,6 @@ class IndustrialDashboard:
     # ==============================================================
     def _refresh_inspection_availability(self):
         """Enable inspection only for cameras with usable calibration."""
-        if getattr(self, 'inspection_busy', False):
-            self.detect_btn_L.config(state=tk.DISABLED)
-            self.detect_btn_R.config(state=tk.DISABLED)
-            return
         left_ready = bool(
             self.camera1 is not None
             and getattr(self.camera1, 'calibration_available', False)
@@ -1386,8 +1394,13 @@ class IndustrialDashboard:
             self.camera2 is not None
             and getattr(self.camera2, 'calibration_available', False)
         )
-        self.detect_btn_L.config(state=tk.NORMAL if left_ready else tk.DISABLED)
-        self.detect_btn_R.config(state=tk.NORMAL if right_ready else tk.DISABLED)
+        side_busy = getattr(self, '_side_busy', {})
+        self.detect_btn_L.config(
+            state=tk.NORMAL if left_ready and not side_busy.get('L', False)
+            else tk.DISABLED)
+        self.detect_btn_R.config(
+            state=tk.NORMAL if right_ready and not side_busy.get('R', False)
+            else tk.DISABLED)
 
         missing = []
         if not left_ready:
@@ -1401,7 +1414,7 @@ class IndustrialDashboard:
                 100,
                 f"Camera setup required for {camera_text}; live preview is available, inspection is disabled",
             )
-        else:
+        elif not any(side_busy.values()):
             self.set_pass_fail("LIVE")
             self.update_progress(100, "Live Feed")
 
@@ -1545,34 +1558,11 @@ class IndustrialDashboard:
         canvas.tag_lower("img")
 
     # ==============================================================
-    # inspection result – crops on screen until the operator resumes
+    # inspection result – only defective crops are shown, one side at a time
     # ==============================================================
-    def _publish_crop_progress(self, crop_index, image, busy):
-        """Worker thread: hand one crop's state to the UI thread.
-
-        Called from the detection thread, so the update is always applied by a
-        marshalled callback. The generation is captured now and checked on the
-        main thread, which makes a publish that arrives after the inspection has
-        finished a no-op instead of touching a dismissed view.
-        """
-        generation = getattr(self, 'detection_generation', 0)
-        self.root.after(
-            0, self._apply_crop_progress, crop_index, image, busy, generation,
-        )
-
-    def _apply_crop_progress(self, crop_index, image, busy, generation):
-        """Main thread: update one crop tab, if it is still the current run's."""
-        if generation != getattr(self, 'detection_generation', 0):
-            return
-        # The generation alone is not enough: the view can be destroyed before
-        # the generation is bumped, and a queued callback cannot be cancelled.
-        view = getattr(self, 'result_view', None)
-        if view is None or not view.winfo_exists():
-            return
-        view.update_crop(crop_index, image, busy)
-
-    def _present_detection_result(self, camera_num, crops):
-        """Main thread: show crops while their completed overlays are prepared."""
+    def _present_detection_result(self, result):
+        """Show one completed side's defective crops and start their timer."""
+        camera_num = result["camera_num"]
         if self.result_view is None:
             self.result_view = CropResultView(
                 self.image_panel, self.toggle_result_timer,
@@ -1580,24 +1570,46 @@ class IndustrialDashboard:
             )
         self.images_container.pack_forget()
         self.result_view.pack(side=tk.TOP, **self.images_container_pack_opts)
-        self.result_view.show_crops(crops, self._first_uploading_crop(camera_num))
-        # The automatic sequence starts in _inspection_worker_done, after every
-        # requested overlay has arrived. Until then the visible crop may carry
-        # the upload spinner, but the configured display time is not consumed.
-        self.result_view.prepare_transition()
+        self.result_view.set_title(f"CAMERA {camera_num} DEFECTS")
+        self.result_view.show_crops(
+            result["crops"], 0, labels=result["labels"])
         self.set_pass_fail("RESULT")
-        # Report here rather than at the resume press: the ESP32 gives the
-        # inspection 60 seconds from its ACK, after which it turns red and
-        # discards a late DONE.
-        self._report_detection_status(True)
+        self.video_paused = True
+        self._start_result_sequence()
 
-    def _first_uploading_crop(self, camera_num):
-        """The 0-based tab to open on, so the spinner is visible immediately."""
-        selected = CONFIG['sam_detection']['send_crops'].get(str(camera_num)) or []
-        for index, wanted in enumerate(selected):
-            if wanted:
-                return index
-        return 0
+    def _inspection_completed(self, side, order, camera_num, crops, labels,
+                              warnings, completed=True):
+        """Main-thread completion: report hardware and queue defects in request order."""
+        self._report_detection_status(side, completed)
+        result = {
+            "side": side, "camera_num": camera_num, "crops": crops,
+            "labels": labels, "warnings": warnings, "completed": completed,
+        }
+        self._completed_inspections[order] = result
+        if not completed or not crops:
+            self._set_side_busy(side, False)
+        if warnings:
+            self.set_pass_fail("WARNING")
+            self.update_progress(100, " | ".join(warnings))
+        self._drain_completed_inspections()
+
+    def _drain_completed_inspections(self):
+        while self._next_result_order in self._completed_inspections:
+            result = self._completed_inspections.pop(self._next_result_order)
+            self._next_result_order += 1
+            if result["completed"] and result["crops"]:
+                self._result_queue.append(result)
+        self._show_next_result()
+
+    def _show_next_result(self):
+        if self._active_result is not None or not self._result_queue:
+            if self._active_result is None and not any(self._side_busy.values()):
+                self.video_paused = False
+                self._refresh_inspection_availability()
+            return
+        self._active_result = self._result_queue.pop(0)
+        self._active_inspection_side = self._active_result["side"]
+        self._present_detection_result(self._active_result)
 
     def _dismiss_result_view(self):
         """Put the dual camera view back in place of the result."""
@@ -1610,23 +1622,15 @@ class IndustrialDashboard:
         self.images_container.pack(**self.images_container_pack_opts)
 
     def start_live_preview(self):
-        """Finish the automatic result sequence and resume the live feed."""
+        """Finish the current defect set, then show the next queued side."""
+        result = self._active_result
         self._dismiss_result_view()
         self.restore_dual_view()
-        # The paused preview loop is still armed, so _finish_detection is all it
-        # takes for the next tick to draw live frames again. Restarting the
-        # stream here would risk a second preview timer.
-        self._finish_detection()
-
-    def _inspection_worker_done(self):
-        """Queued from the worker: start Crop 1 -> Crop 2 -> Live timing."""
-        view = getattr(self, 'result_view', None)
-        if view is None or not view.winfo_exists():
-            return
-        # A crop whose upload raised never publishes busy=False, and one dropped
-        # by the generation guard never arrives at all, so clear what is left.
-        view.mark_all_idle()
-        self._start_result_sequence()
+        self._active_result = None
+        self._active_inspection_side = None
+        if result is not None:
+            self._set_side_busy(result["side"], False)
+        self._show_next_result()
 
     def _result_display_duration(self):
         value = getattr(
@@ -1682,16 +1686,18 @@ class IndustrialDashboard:
         self._schedule_result_timer_tick()
 
     def _advance_result_sequence(self):
-        if self._result_sequence_index == 0:
-            self._result_sequence_index = 1
+        view = getattr(self, 'result_view', None)
+        crop_count = len(getattr(view, '_tabs', [])) if view is not None else 0
+        if self._result_sequence_index + 1 < crop_count:
+            self._result_sequence_index += 1
             self._result_timer_remaining = self._result_display_duration()
             self._result_timer_last_tick = time.monotonic()
-            view = getattr(self, 'result_view', None)
             if view is None or not view.winfo_exists():
                 self._cancel_result_timer()
                 return
             view.show_transition(
-                1, math.ceil(self._result_timer_remaining), paused=False,
+                self._result_sequence_index,
+                math.ceil(self._result_timer_remaining), paused=False,
             )
             self._schedule_result_timer_tick()
             return
@@ -1748,9 +1754,18 @@ class IndustrialDashboard:
         self._result_timer_last_tick = None
 
     def reset_dashboard(self):
-        """The RESET button: never leave a held result blocking the dashboard."""
+        """The RESET button: retire workers and clear queued defect results."""
+        self._inspection_epoch = getattr(self, '_inspection_epoch', 0) + 1
+        self._completed_inspections.clear()
+        self._result_queue.clear()
+        self._next_result_order = self._inspection_order_counter
+        self._active_result = None
+        for side in ("L", "R"):
+            self._report_detection_status(side, completed=False)
+            self._set_side_busy(side, False)
         self._dismiss_result_view()
-        self._finish_detection(completed=False)
+        self.video_paused = False
+        self._active_inspection_side = None
         # Last, so the callback's own status refresh has the final word.
         self.on_reset_callback()
 
@@ -1772,8 +1787,16 @@ class IndustrialDashboard:
     # ==============================================================
     # detection trigger – with maximize & highlight
     # ==============================================================
+    def _set_side_busy(self, side, busy):
+        states = getattr(self, '_side_busy', None)
+        if states is None:
+            states = self._side_busy = {"L": False, "R": False}
+        states[side] = bool(busy)
+        self.inspection_busy = any(states.values())
+        self._refresh_inspection_availability()
+
     def start_detect_thread(self, side):
-        if getattr(self, 'inspection_busy', False):
+        if getattr(self, '_side_busy', {}).get(side, False):
             return False
         if getattr(self, 'calibration_page', None) is not None:
             return False
@@ -1800,53 +1823,55 @@ class IndustrialDashboard:
             )
             return False
 
-        # Disable both detection buttons while processing
-        self.inspection_busy = True
-        self._active_inspection_side = side
-        self.detect_btn_L.config(state=tk.DISABLED)
-        self.detect_btn_R.config(state=tk.DISABLED)
-        self.video_paused = True
-        # The bumped generation retires any progress publish still queued from a
-        # previous run, and this run has its own outcome to report, so nothing
-        # from the last one may be re-sent for it.
-        self.detection_generation = getattr(self, 'detection_generation', 0) + 1
-        self._serial_reported_side = None
+        self._set_side_busy(side, True)
+        order = getattr(self, '_inspection_order_counter', 0)
+        self._inspection_order_counter = order + 1
+        epoch = getattr(self, '_inspection_epoch', 0)
 
         # Start a thread that does the detection
-        threading.Thread(target=self._run_detection, args=(side,), daemon=True).start()
+        threading.Thread(
+            target=self._run_detection, args=(side, order, epoch), daemon=True,
+        ).start()
         return True
 
-    def _run_detection(self, side):
+    def _run_detection(self, side, order, epoch):
         try:
-            self._simulate_detection(side)
+            camera_num, crops, labels, warnings = self._simulate_detection(side)
+            self.root.after(
+                0, self._complete_worker_result, epoch, side, order, camera_num,
+                crops, labels, warnings, True,
+            )
         except Exception as error:
             print(f"Inspection {side} failed: {error}")
-            self.root.after(0, self._inspection_failed)
-        finally:
-            # Runs even on a crash: this is what lets the operator resume, so a
-            # failure can never leave the result view permanently held.
-            self.root.after(0, self._inspection_worker_done)
+            camera_num = 1 if side == "L" else 2
+            self.root.after(
+                0, self._complete_worker_result, epoch, side, order, camera_num,
+                [], [], [f"Camera {camera_num}: inspection could not be completed"],
+                False,
+            )
 
-    def _inspection_failed(self):
-        # A failure must not trap the operator behind the resume button.
-        self._dismiss_result_view()
-        self.restore_dual_view()
-        self._finish_detection(completed=False)
-        self.set_pass_fail("WARNING")
-        self.update_progress(100, "Inspection could not be completed")
+    def _complete_worker_result(self, epoch, *result):
+        if epoch != getattr(self, '_inspection_epoch', 0):
+            return
+        self._inspection_completed(*result)
 
     def _simulate_detection(self, side):
         """Save full frames and prepare two independent deskewed model inputs."""
         if side == "L":
             camera_num = 1
             cam_name = "Camera 1"
-            _, frame = self.camera1.get_raw_frame_with_ret()
-            frame_undist = self.camera1.get_undistorted_frame()
+            camera = self.camera1
         else:
             camera_num = 2
             cam_name = "Camera 2"
-            _, frame = self.camera2.get_raw_frame_with_ret()
-            frame_undist = self.camera2.get_undistorted_frame()
+            camera = self.camera2
+
+        snapshot = camera.capture_snapshot()
+        if not isinstance(snapshot, tuple) or len(snapshot) != 3:
+            _, frame = camera.get_raw_frame_with_ret()
+            frame_undist = camera.get_undistorted_frame()
+        else:
+            _, frame, frame_undist = snapshot
 
         if frame is None:
             raise RuntimeError(f"Camera {camera_num} did not return a frame")
@@ -1884,25 +1909,23 @@ class IndustrialDashboard:
             crops.append(crop)
             print(f"Camera {camera_num} Crop {crop_index} saved: {crop_path}")
 
-        # Put the crops on screen before the upload starts: the operator sees
-        # what is being inspected while the network call is in flight, and can
-        # switch tabs between the two crops.
-        self.root.after(0, self._present_detection_result, camera_num, crops)
-
-        display_crops, detection_warnings = self._detect_crops(
-            camera_num, timestamp, crops, frame_undist.shape[:2][::-1],
-            progress=self._publish_crop_progress,
-        )
-        # The only place this instruction is set: setting it when the result is
-        # presented would let this later callback overwrite it a tick later.
+        display_crops, detection_warnings, defective_indices = self._detect_crops(
+            camera_num, timestamp, crops, frame_undist.shape[:2][::-1])
         if detection_warnings:
             self.root.after(0, self.set_pass_fail, "WARNING")
             self.root.after(0, self.update_progress, 100, " | ".join(detection_warnings))
         else:
             self.root.after(0, self.update_progress, 100,
-                            "Inspection complete — results advance automatically")
+                            (f"{cam_name}: defects ready" if defective_indices else
+                             f"{cam_name}: no defective segments; results saved"))
 
         print(f"Crop preprocessing completed for {cam_name} (size: {self.active_size})")
+        return (
+            camera_num,
+            [display_crops[index - 1] for index in defective_indices],
+            [f"CROP {index}" for index in defective_indices],
+            detection_warnings,
+        )
 
     def _strip_scale(self, camera_num, crop_index, frame_size, warnings):
         """The crop's millimetre scale, or None when it cannot be built.
@@ -1962,8 +1985,8 @@ class IndustrialDashboard:
     def _detect_crops(self, camera_num, timestamp, crops, frame_size=None, progress=None):
         """Run SAM detection on the configured crops; return what to display.
 
-        Returns the crop images to stack (annotated where detection ran) and a
-        list of warning strings. This never raises: a failed call leaves the raw
+        Returns display crops, warnings, and the 1-based crop indices containing
+        at least one out-of-tolerance segment. This never raises: a failed call leaves the raw
         crop in place and is reported instead, so a network problem can never
         lose an inspection.
 
@@ -1977,7 +2000,7 @@ class IndustrialDashboard:
         settings = CONFIG['sam_detection']
         selected = settings['send_crops'][str(camera_num)]
         if not settings['enabled'] or not any(selected):
-            return crops, []
+            return crops, [], []
 
         prompt = settings['prompt']
         quality = settings['jpeg_quality']
@@ -1995,6 +2018,7 @@ class IndustrialDashboard:
 
         display = list(crops)
         warnings = []
+        defective_indices = []
         # Only the selected crops are uploaded, so the spinner must follow that
         # order rather than the tab order: with the shipped config the first (and
         # only) upload is crop 2, and stepping by index would leave the spinner
@@ -2044,10 +2068,18 @@ class IndustrialDashboard:
                         f"Crop {crop_index}: width tolerance was not checked because "
                         "no millimetre calibration is available")
 
+                if any(segment.within_tolerance is False
+                       for segment in summary.segments):
+                    defective_indices.append(crop_index)
+
             overlay_saved = False
-            if detection.polygons and settings['save_overlay']:
+            annotated = None
+            if detection.polygons:
                 annotated = sam_detection.draw_analysis(
                     crop, detection.polygons, measurement)
+                if crop_index in defective_indices:
+                    display[crop_index - 1] = annotated
+            if annotated is not None and settings['save_overlay']:
                 overlay_path = os.path.join(
                     detected_dir, f"crop_{timestamp}_{crop_index}.png")
                 if cv2.imwrite(overlay_path, annotated):
@@ -2081,42 +2113,27 @@ class IndustrialDashboard:
             if progress is not None:
                 progress(crop_index, display[crop_index - 1], False)
 
-        return display, warnings
+        return display, warnings, defective_indices
 
-    def _report_detection_status(self, completed=True):
-        """Tell the ESP32 how the request ended, once per outcome.
+    def _report_detection_status(self, side, completed=True):
+        """Tell the ESP32 how one independently running side finished."""
+        pending = getattr(self, '_serial_pending_sides', set())
+        if side not in pending:
+            return
+        pending.discard(side)
+        self._send_serial_status(f"{side}_{'DONE' if completed else 'ERROR'}")
 
-        Called as soon as the result is presented rather than when the operator
-        resumes: the board allows the inspection 60 seconds from its ACK, after
-        which it turns red and discards a late DONE. Clearing the pending side
-        here is what makes the later call from _finish_detection a no-op, while
-        the side is remembered separately so a failure arriving after the result
-        was shown can still report itself.
-        """
-        side = getattr(self, '_serial_pending_side', None)
-        self._serial_pending_side = None
+    def _finish_detection(self, completed=True, side=None):
+        """Compatibility helper for callers finishing one side explicitly."""
+        side = side or getattr(self, '_active_inspection_side', None)
         if side is None:
-            # Only a failure may report again once completion has been sent.
-            if completed:
-                return
-            side = getattr(self, '_serial_reported_side', None)
-            if side is None:
-                return
-        self._serial_reported_side = side
-        self._send_serial_status(
-            f"{side}_{'DONE' if completed else 'ERROR'}"
-        )
-
-    def _finish_detection(self, completed=True):
-        self._report_detection_status(completed)
-        self._cancel_result_timer()
-        self.video_paused = False
-        self.inspection_busy = False
-        self._active_inspection_side = None
-        # Retire any progress publish still queued: the bumped generation turns
-        # it into a no-op rather than a draw on a dismissed view.
-        self.detection_generation = getattr(self, 'detection_generation', 0) + 1
-        self._refresh_inspection_availability()
+            busy = [name for name, value in getattr(self, '_side_busy', {}).items() if value]
+            side = busy[0] if len(busy) == 1 else None
+        if side is not None:
+            self._report_detection_status(side, completed)
+            self._set_side_busy(side, False)
+        if getattr(self, '_active_result', None) is None:
+            self.video_paused = False
 
     # ==============================================================
     # zoom / pan (only used when images are shown, not in live feed)
