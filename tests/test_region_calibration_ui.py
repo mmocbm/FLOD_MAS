@@ -399,5 +399,44 @@ class CheckRegionSelectorTests(unittest.TestCase):
             self.assertFalse(page._region_check_ready())
 
 
+class UnselectedCameraTests(unittest.TestCase):
+    """The check page is built before a camera is picked, and the section must survive that.
+
+    This is a regression test. The region section refreshed itself at the end of
+    construction, and that refresh resolved the camera's side number from a calibration
+    path -- which does not exist until a camera has been selected. ``camera_config``
+    raised ``StopIteration``, it escaped the page constructor, and the whole Calibration
+    Check page died with "Could not open camera tool" for every operator who had the
+    optional mode switched on. The earlier tests all built the page with ``__new__`` and
+    never ran the constructor, so none of them could have caught it.
+    """
+
+    def _page(self):
+        from CalibrateAPP import calibration_ui
+        page = calibration_ui.CalibrationCheckApp.__new__(
+            calibration_ui.CalibrationCheckApp)
+        page.camera_index = None
+        page.region_check_index = 1
+        page.region_check_info = MagicMock()
+        return page
+
+    def test_the_camera_number_falls_back_rather_than_raising(self):
+        self.assertEqual(self._page()._camera_number(), 1)
+
+    def test_there_is_no_region_to_check_without_a_camera(self):
+        from CalibrateAPP import calibration_ui
+        page = self._page()
+        with patch.object(calibration_ui, "CONFIG",
+                          {"region_homography": dict(SETTINGS)}):
+            self.assertIsNone(page._check_region_crop())
+            self.assertFalse(page._region_check_ready())
+
+    def test_the_section_says_so_rather_than_naming_a_region(self):
+        page = self._page()
+        page._refresh_region_check_info()
+        text = page.region_check_info.configure.call_args.kwargs["text"]
+        self.assertIn("select a camera", text)
+
+
 if __name__ == "__main__":
     unittest.main()

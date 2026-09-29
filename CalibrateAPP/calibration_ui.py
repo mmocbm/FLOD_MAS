@@ -2268,6 +2268,9 @@ class CalibrationCheckApp(CalibrationApp):
                 state=tk.NORMAL if (ready and self._region_check_ready())
                 else tk.DISABLED,
             )
+            # The section describes one camera's region, so it has to be re-read whenever
+            # the selected camera changes, not only when a region button is pressed.
+            self._refresh_region_check_info()
 
     def _load_saved_intrinsics(self):
         saved = super()._load_saved_intrinsics()
@@ -2857,8 +2860,20 @@ class CalibrationCheckApp(CalibrationApp):
 
         The config ``index`` is the device's capture index, not the side's number, so the
         number is recovered by matching the file rather than by trusting the index.
+
+        The page is built before the operator has picked a camera, and the region section
+        is deliberately drawn in that state rather than held back, so this has to answer
+        something before there is a file to match. It answers the first side, which is what
+        the section would show anyway; ``_check_region_crop`` reports "no camera" rather
+        than letting that guess stand in for a real answer.
         """
-        calibration = self._calibration_path()
+        if self.camera_index is None:
+            return 1
+        try:
+            calibration = self._calibration_path()
+        except (KeyError, StopIteration, TypeError):
+            # camera_config raises StopIteration when no configured camera has this index.
+            return 1
         for number in range(1, len(CONFIG['cameras']) + 1):
             paths = region_calibration.camera_paths(number)
             if paths and paths[0] and Path(paths[0]) == calibration:
@@ -2866,6 +2881,8 @@ class CalibrationCheckApp(CalibrationApp):
         return 1
 
     def _check_region_crop(self, region_index=None):
+        if self.camera_index is None:
+            return None
         index = self.region_check_index if region_index is None else region_index
         try:
             definitions = load_crop_store(
@@ -2894,6 +2911,10 @@ class CalibrationCheckApp(CalibrationApp):
         if not hasattr(self, 'region_check_info'):
             return
         label = f"REGION 0{self.region_check_index}"
+        if self.camera_index is None:
+            self.region_check_info.configure(
+                text=f"{label}: select a camera to check a region.")
+            return
         if self._check_region_crop() is None:
             self.region_check_info.configure(
                 text=f"{label}: no crop region is marked for this camera.")
