@@ -74,6 +74,7 @@ def load_plane_scale(
     output_size: tuple[int, int] = (2208, 552),
     calibration_path: str | Path | None = None,
     extrinsics_path: str | Path | None = None,
+    ratio: float = 4.0,
 ) -> PlaneScale:
     """Build the crop-to-millimetre scale for one camera and crop region.
 
@@ -108,7 +109,7 @@ def load_plane_scale(
     ], dtype=np.float32)
 
     try:
-        to_crop = rotated_crop_transform(definition, frame_size, output_size)
+        to_crop = rotated_crop_transform(definition, frame_size, output_size, ratio)
         source = cv2.perspectiveTransform(
             corners.reshape(-1, 1, 2), np.linalg.inv(to_crop)
         ).reshape(-1, 2)

@@ -23,10 +23,27 @@ for key in ("max_width", "max_height", "interval_ms"):
 crop_setup = CONFIG.get('crop_setup', {})
 if crop_setup.get('crops_per_camera') != 2:
     raise ValueError("Crop setup must define exactly two crops per camera")
-if crop_setup.get('aspect_ratio') != [4, 1]:
-    raise ValueError("Crop setup aspect_ratio must be [4, 1]")
-if crop_setup.get('output_size') != [2208, 552]:
-    raise ValueError("Crop setup output_size must be [2208, 552]")
+aspect_ratio = crop_setup.get('aspect_ratio')
+if (not isinstance(aspect_ratio, (list, tuple)) or len(aspect_ratio) != 2
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+               for value in aspect_ratio)):
+    raise ValueError("Crop setup aspect_ratio must be two positive numbers, for example [4, 1]")
+output_size = crop_setup.get('output_size')
+if (not isinstance(output_size, (list, tuple)) or len(output_size) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+               for value in output_size)):
+    raise ValueError("Crop setup output_size must be two positive integers, for example [2208, 552]")
+# The crop is deskewed and resized in one transform, so a mismatch here does not fail
+# loudly -- it stretches every crop by a small, invisible amount. Check it instead.
+if abs(output_size[0] / output_size[1] - aspect_ratio[0] / aspect_ratio[1]) > 1e-6:
+    raise ValueError(
+        f"Crop setup output_size {output_size[0]} x {output_size[1]} does not match "
+        f"aspect_ratio {aspect_ratio[0]}:{aspect_ratio[1]}; keep the two ratios equal "
+        "so crops are not stretched")
+margin_percent = crop_setup.get('margin_percent', 0)
+if (isinstance(margin_percent, bool) or not isinstance(margin_percent, (int, float))
+        or not 0 <= margin_percent < 100):
+    raise ValueError("Crop setup margin_percent must be a number from 0 up to 100")
 if not crop_setup.get('definitions_file'):
     raise ValueError("Crop setup definitions_file must not be empty")
 board = CONFIG["board"]

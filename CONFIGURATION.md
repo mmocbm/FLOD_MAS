@@ -56,19 +56,68 @@ coordinates back to the full-resolution captured image.
 ## Manual crop setup
 
 `crop_setup` configures the two independent model-input regions used for each
-camera. `aspect_ratio` is fixed at `[4, 1]`, and `output_size` is `[2208, 552]`, so
-deskewing and resizing use the same ratio and therefore apply one uniform scale.
-Crop definitions are stored in `Files/crop_regions.json` by default.
+camera. Crop definitions are stored in `Files/crop_regions.json` by default.
 
-In **Crop Setup**, select a camera and Crop 1 or Crop 2, capture an undistorted
-frame, and drag the red 4:1 region. The region can be moved by dragging inside it
-or resized from a corner. Select **Set Line** and click two points along an edge
-that should become horizontal, then save the crop. Repeat for all four regions.
+`aspect_ratio` selects the shape of a crop and `output_size` the resolution it is
+resized to. They default to `[4, 1]` and `[2208, 552]`, and **must describe the same
+ratio**: deskewing and resizing are one transform, so a mismatch would not fail
+loudly, it would stretch every crop by a small amount. The app rejects a
+configuration where the two disagree and names both values.
+
+`margin_percent` grows the marked region on all four sides, so the fabric never sits
+flush against the crop edge. It is a percentage of the marked size: `8` adds 8% of
+the marked width to each side horizontally and 8% of the marked height vertically.
+The default is `8`. The margin is applied when the region is marked, so it is baked
+into the saved crop — see the note on adjusting it below.
+
+### Marking a region
+
+In **Crop Setup**, select a camera and Crop 1 or Crop 2, then press **Capture** to
+freeze and undistort one frame.
+
+Press **Mark 4 Points** and click the four corners in order around the region:
+
+1. the first corner of the region
+2. the next corner along that end edge — clicks 1 and 2 are the boundary
+3. the corner across the region — clicks 2 and 3 run along the long side
+4. the last corner, level with point 1
+
+Clicks 2 and 3 set the deskew: that line is what becomes horizontal. The crop is then
+the marked region, grown by `margin_percent` and fitted to `aspect_ratio`. It can be
+moved by dragging inside it, or resized from a corner, and **Save Crop** stores it.
+Repeat for all four regions.
+
+Every step only ever grows the box, never shrinks it, so whatever was marked plus its
+margin is always inside the crop. If the margin would push the crop past the edge of
+the image the app says so and refuses to save rather than silently clipping the
+region or quietly moving it; mark further from the edge, or lower `margin_percent`.
+A mark the app cannot make sense of — corners out of order, points too close, the
+short side clicked where the long side belongs — is reported with the reason and the
+clicks are left on screen so the mistake is visible. Pressing **Mark 4 Points** again,
+or clicking once more, starts over.
+
+The crop region must stay inside the image, and the framing is measured, so a sloppy
+mark is widened rather than losing fabric. The marked corners are stored with the
+crop, which is what allows the two settings below to be changed without re-marking.
+
+### Changing the ratio or the margin afterwards
+
+`aspect_ratio` is not stored per crop: only a normalized width is, and the height is
+re-derived from the configured ratio when a crop is loaded. **Changing `aspect_ratio`
+therefore reinterprets every saved crop**, and the app says so when Crop Setup is next
+opened. Re-mark all four regions after changing it.
+
+`margin_percent` is stored, but the marked corners are kept alongside it, so changing
+it re-derives the crop from the original mark — the larger or smaller margin appears
+the next time crop setup is opened, and **Save Crop** persists it. A region that was
+adjusted by hand after marking has no corners left to re-derive from and keeps the
+box it was given. Changing either setting does not alter anything until a crop is
+saved, so an inspection can never be changed by an unsaved edit.
 
 Inspection saves one timestamp-matched original image, undistorted image, and two
 deskewed crops under `Dataset_capture/CameraN/{Original,Undistorted,Crop1,Crop2}`.
-The two crops are prepared independently at 2208 × 552 and displayed vertically.
-The crops selected in `sam_detection.send_crops` are then sent for object
+The two crops are prepared independently at the configured output size and displayed
+vertically. The crops selected in `sam_detection.send_crops` are then sent for object
 detection, described in the next section.
 
 ## SAM object detection

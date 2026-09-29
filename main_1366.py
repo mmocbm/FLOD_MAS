@@ -18,10 +18,11 @@ import plane_scale
 import sam_detection
 from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
 from crop_processing import (
-    definition_fits_image, extract_rotated_crop,
-    load_crop_store, normalized_definition, pixel_definition,
-    parallel_line_angle, rotated_crop_corners, save_crop_store, stack_crop_results,
+    crop_edit_from_saved, definition_fits_image, extract_rotated_crop,
+    four_point_crop, load_crop_store, normalized_definition, pixel_definition,
+    rotated_crop_corners, save_crop_store,
 )
+from crop_result_view import CropResultView
 from ui_theme import (
     COLORS as C, FONT, button as themed_button, card as themed_card,
     configure_ttk, section_label, set_button_role, status_dot,
@@ -48,6 +49,11 @@ CALIB_FILE_1, CALIB_FILE_2 = [project_path(c['calibration_file']) for c in CONFI
 CROP_DEFINITIONS_FILE = project_path(CONFIG['crop_setup']['definitions_file'])
 CROP_RATIO = CONFIG['crop_setup']['aspect_ratio'][0] / CONFIG['crop_setup']['aspect_ratio'][1]
 CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
+# Each side of a marked region is grown by this percentage of the marked size, so
+# the fabric never sits flush against the crop edge.
+CROP_MARGIN_PERCENT = CONFIG['crop_setup'].get('margin_percent', 0)
+# Shown to the operator, so it reads as the configured ratio rather than "4.0".
+CROP_RATIO_LABEL = "{}:{}".format(*CONFIG['crop_setup']['aspect_ratio'])
 
 # Fixed sizes only (no patterns)
 FIXED_SIZES = CONFIG['inspection']['sizes']
@@ -342,7 +348,7 @@ class IndustrialDashboard:
         self.btn_container.pack(expand=True)
         themed_button(self.btn_container, "SETTINGS", self.open_settings_selector,
                       role="secondary", width=11, pady=15).pack(side=tk.LEFT, padx=4)
-        themed_button(self.btn_container, "RESET", self.on_reset_callback,
+        themed_button(self.btn_container, "RESET", self.reset_dashboard,
                       role="danger", width=9, pady=15).pack(side=tk.LEFT, padx=4)
         self.detect_btn_L = themed_button(
             self.btn_container, "INSPECT LEFT", lambda: self.start_detect_thread("L"),
@@ -437,6 +443,11 @@ class IndustrialDashboard:
         self._open_camera_tool("checks")
 
     def _open_camera_tool(self, page):
+        # The result view lives inside main_frame, which this page hides. Leaving
+        # while an inspection is held would strand a frozen result over an
+        # invisible live feed, so the operator resumes first.
+        if getattr(self, 'inspection_busy', False):
+            return
         existing_app = getattr(self, 'calibration_app', None)
         if existing_app is not None:
             if getattr(self, '_camera_tool_page', None) == page:
@@ -726,10 +737,23 @@ class IndustrialDashboard:
         self.crop_live_frame = None
         self.crop_frozen_frame = None
         self.crop_edit = None
-        self.crop_edit_mode = "draw"
-        self.crop_line_points = []
+        self.crop_edit_mode = "edit"
+        self.crop_mark_points = []
         self.crop_drag = None
         self.video_paused = False
+        # Crop geometry depends on the configured ratio, but a saved crop stores only
+        # a normalized width -- its height is re-derived from that ratio on load. A
+        # stored set marked under a different ratio is therefore silently the wrong
+        # shape, so say so rather than let it pass as a working crop.
+        stored_ratio = self.crop_definitions.get("aspect_ratio")
+        self.crop_ratio_warning = ""
+        if stored_ratio and list(stored_ratio) != list(CONFIG['crop_setup']['aspect_ratio']):
+            self.crop_ratio_warning = (
+                f"CROP SETUP · saved crops were marked at "
+                f"{stored_ratio[0]}:{stored_ratio[1]} but the configuration now asks for "
+                f"{CONFIG['crop_setup']['aspect_ratio'][0]}:"
+                f"{CONFIG['crop_setup']['aspect_ratio'][1]} — re-mark all four regions"
+            )
 
         header = tk.Frame(
             self.crop_win, bg=C["surface"], height=TITLE_BAR_HEIGHT,
@@ -760,7 +784,7 @@ class IndustrialDashboard:
         text_box = tk.Frame(controls, bg=C["card"])
         text_box.pack(side=tk.LEFT, padx=(14, 18), pady=8)
         section_label(text_box, "Manual regions").pack(anchor="w")
-        tk.Label(text_box, text="Two 4:1 deskewed crops per camera",
+        tk.Label(text_box, text=f"Two {CROP_RATIO_LABEL} deskewed crops per camera",
                  fg=C["text_soft"], bg=C["card"], font=(FONT, 9)).pack(anchor="w")
 
         self.crop_camera_buttons = {}
@@ -789,13 +813,16 @@ class IndustrialDashboard:
                       role="primary", width=10, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
         themed_button(controls, "CLEAR", self.clear_crop_region,
                       role="danger", width=7, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
-        themed_button(controls, "SET LINE", self.start_crop_rotation_line,
-                      role="purple", width=9, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
+        themed_button(controls, "MARK 4 POINTS", self.start_crop_marking,
+                      role="purple", width=14, pady=8).pack(side=tk.RIGHT, padx=3, pady=9)
 
         self.crop_status = tk.Label(
-            content, text="Live preview is raw; CAPTURE freezes and undistorts one frame",
-            bg=C["surface_2"], fg=C["text_soft"], font=(FONT, 9, "bold"),
-            anchor="w", padx=12, pady=7,
+            content,
+            text=(self.crop_ratio_warning or
+                  "Live preview is raw; CAPTURE freezes and undistorts one frame"),
+            bg=C["surface_2"],
+            fg=C["danger"] if self.crop_ratio_warning else C["text_soft"],
+            font=(FONT, 9, "bold"), anchor="w", padx=12, pady=7,
         )
         self.crop_status.pack(fill=tk.X, pady=(0, 8))
 
@@ -814,7 +841,8 @@ class IndustrialDashboard:
         self.crop_live_frame = None
         self.crop_frozen_frame = None
         self.crop_edit = None
-        self.crop_line_points = []
+        self.crop_edit_mode = "edit"
+        self.crop_mark_points = []
         for number, button in self.crop_camera_buttons.items():
             set_button_role(button, "selected" if number == camera else "secondary")
         self.crop_status.configure(
@@ -823,6 +851,8 @@ class IndustrialDashboard:
 
     def _select_crop_index(self, crop_index):
         self.crop_selected_index = crop_index
+        self.crop_edit_mode = "edit"
+        self.crop_mark_points = []
         for number, button in self.crop_index_buttons.items():
             set_button_role(button, "selected" if number == crop_index else "secondary")
         if self.crop_frozen_frame is not None:
@@ -852,11 +882,12 @@ class IndustrialDashboard:
             self._show_error_popup(f"Could not undistort the captured frame:\n{error}")
             return
         self.crop_frozen = True
-        self.crop_edit_mode = "draw"
+        self.crop_edit_mode = "edit"
+        self.crop_mark_points = []
         self._load_selected_crop_for_edit()
         self._display_crop_setup_frame(self.crop_frozen_frame)
         self.crop_status.configure(
-            text="Drag to create a 4:1 crop. Drag inside to move; drag a corner to resize."
+            text="Press MARK 4 POINTS and click the four corners in order around the region."
         )
 
     def _load_selected_crop_for_edit(self):
@@ -865,50 +896,83 @@ class IndustrialDashboard:
         ]
         if saved is None or self.crop_frozen_frame is None:
             self.crop_edit = None
-            self.crop_line_points = []
             return
         height, width = self.crop_frozen_frame.shape[:2]
-        self.crop_edit = pixel_definition(saved, (width, height), CROP_RATIO)
-        self.crop_line_points = [list(point) for point in self.crop_edit["line"]]
+        self.crop_edit = crop_edit_from_saved(
+            saved, (width, height), CROP_RATIO, CROP_MARGIN_PERCENT,
+        )
 
-    def start_crop_rotation_line(self):
-        if not self.crop_frozen or self.crop_edit is None:
-            self._show_error_popup("Capture a frame and draw the crop first.")
+    def start_crop_marking(self):
+        if not self.crop_frozen or self.crop_frozen_frame is None:
+            self._show_error_popup("Capture a frame first.")
             return
-        self.crop_edit_mode = "line"
-        self.crop_line_points = []
-        self.crop_status.configure(text="Click two points along the direction that must become horizontal")
+        # The previous rectangle is not lost: re-selecting the crop reloads it from
+        # the saved definitions.
+        self.crop_edit = None
+        self.crop_edit_mode = "mark"
+        self.crop_mark_points = []
+        self.crop_status.configure(text=self._mark_progress_text())
         self._redraw_crop_overlay()
+
+    def _mark_progress_text(self):
+        """What the next click means, in the order the corners are traced."""
+        prompts = (
+            "click the first corner of the region",
+            "click the next corner along that end edge",
+            "click the corner across the region — 2 to 3 runs along the long side "
+            "that must come out horizontal",
+            "click the last corner, level with point 1",
+        )
+        index = min(len(self.crop_mark_points), len(prompts) - 1)
+        return (f"Marking: click {min(len(self.crop_mark_points) + 1, 4)} of 4 — "
+                f"{prompts[index]}")
 
     def clear_crop_region(self):
         self.crop_edit = None
-        self.crop_line_points = []
-        self.crop_edit_mode = "draw"
+        self.crop_mark_points = []
+        self.crop_edit_mode = "edit"
         camera_crops = self.crop_definitions["cameras"][str(self.crop_selected_camera)]
         camera_crops[self.crop_selected_index] = None
         save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
         self._redraw_crop_overlay()
-        self.crop_status.configure(text="Crop cleared — drag to create a new 4:1 region")
+        self.crop_status.configure(
+            text="Crop cleared — press MARK 4 POINTS and click the four corners"
+        )
 
     def save_crop_region(self):
         if not self.crop_frozen or self.crop_frozen_frame is None or self.crop_edit is None:
-            self._show_error_popup("Capture a frame and draw the crop first.")
+            self._show_error_popup("Mark the crop with four points first.")
             return
-        if len(self.crop_line_points) != 2:
-            self._show_error_popup("Select SET LINE and click two rotation points first.")
+        line = self.crop_edit.get("line") or []
+        if len(line) != 2:
+            self._show_error_popup("Mark the crop with four points first.")
             return
         height, width = self.crop_frozen_frame.shape[:2]
         definition = normalized_definition(
             self.crop_edit["center"], self.crop_edit["width"],
-            self.crop_edit["angle_degrees"], self.crop_line_points, (width, height),
+            self.crop_edit["angle_degrees"], line, (width, height),
+            quad=self.crop_edit.get("marked_quad"),
         )
         if not definition_fits_image(definition, (width, height), CROP_RATIO):
-            self._show_error_popup("The rotated crop must remain completely inside the image.")
+            # Clamping would break the promise that the marked region stays inside the
+            # crop, and shrinking would drop fabric the operator marked on purpose.
+            self._show_error_popup(
+                "The marked region plus its margin must stay completely inside the "
+                "image.\n\nMark further from the edge, or lower crop_setup."
+                "margin_percent in config.json."
+            )
             return
+        # Stamp the ratio these regions were measured at, so a later change to
+        # aspect_ratio is reported when crop setup is next opened rather than
+        # silently reinterpreting every saved crop.
+        self.crop_definitions["aspect_ratio"] = list(
+            CONFIG['crop_setup']['aspect_ratio']
+        )
         self.crop_definitions["cameras"][str(self.crop_selected_camera)][
             self.crop_selected_index
         ] = definition
         save_crop_store(CROP_DEFINITIONS_FILE, self.crop_definitions)
+        self._redraw_crop_overlay()
         self.crop_status.configure(
             text=(f"Saved Camera {self.crop_selected_camera}, Crop "
                   f"{self.crop_selected_index + 1} at {self.crop_edit['angle_degrees']:.1f}°")
@@ -975,20 +1039,34 @@ class IndustrialDashboard:
                     x - 5, y - 5, x + 5, y + 5, fill=C["danger"], outline="white",
                     tags="crop_overlay",
                 )
-        if self.crop_line_points:
-            canvas_points = [self._crop_image_to_canvas(point)
-                             for point in self.crop_line_points]
-            for point in canvas_points:
-                x, y = point
-                self.crop_canvas.create_oval(
-                    x - 6, y - 6, x + 6, y + 6, fill=C["warning"], outline="white",
-                    tags="crop_overlay",
+        # The alignment line is the deskew reference, so keep it visible against the
+        # finished crop as well as while the corners are being clicked.
+        line = self.crop_edit.get("line") if self.crop_edit is not None else None
+        if line:
+            self._draw_crop_points(line, numbered=False)
+        if self.crop_mark_points:
+            self._draw_crop_points(self.crop_mark_points, numbered=True)
+
+    def _draw_crop_points(self, points, numbered):
+        canvas_points = [self._crop_image_to_canvas(point) for point in points]
+        for index, point in enumerate(canvas_points):
+            x, y = point
+            self.crop_canvas.create_oval(
+                x - 6, y - 6, x + 6, y + 6, fill=C["warning"], outline="white",
+                tags="crop_overlay",
+            )
+            if numbered:
+                self.crop_canvas.create_text(
+                    x + 13, y - 13, text=str(index + 1), fill=C["warning"],
+                    font=(FONT, 11, "bold"), tags="crop_overlay",
                 )
-            if len(canvas_points) == 2:
-                self.crop_canvas.create_line(
-                    *canvas_points[0], *canvas_points[1], fill=C["warning"],
-                    width=3, arrow=tk.LAST, tags="crop_overlay",
-                )
+        # Point 2 -> point 3 sets the horizontal, so draw it as soon as both
+        # exist rather than only once all four corners are in.
+        if len(canvas_points) >= 3:
+            self.crop_canvas.create_line(
+                *canvas_points[1], *canvas_points[2], fill=C["warning"],
+                width=3, arrow=tk.LAST, tags="crop_overlay",
+            )
 
     def on_crop_press(self, event):
         if not self.crop_frozen:
@@ -996,25 +1074,11 @@ class IndustrialDashboard:
         point = self._canvas_to_crop_image(event.x, event.y)
         if point is None:
             return
-        if self.crop_edit_mode == "line":
-            self.crop_line_points.append(point.tolist())
-            if len(self.crop_line_points) == 2:
-                first, second = map(np.asarray, self.crop_line_points)
-                delta = second - first
-                if np.linalg.norm(delta) < 5:
-                    self.crop_line_points = []
-                    self.crop_status.configure(text="Rotation points are too close — click two wider points")
-                else:
-                    self.crop_edit["angle_degrees"] = parallel_line_angle(first, second)
-                    self.crop_edit["line"] = [first.tolist(), second.tolist()]
-                    self.crop_edit_mode = "draw"
-                    self.crop_status.configure(
-                        text=f"Deskew angle {self.crop_edit['angle_degrees']:.1f}° — save this crop"
-                    )
-            self._redraw_crop_overlay()
+        if self.crop_edit_mode == "mark":
+            self._collect_crop_mark(point)
             return
 
-        self.crop_drag = {"start": point, "kind": "new"}
+        self.crop_drag = None
         if self.crop_edit is not None:
             corners = rotated_crop_corners(
                 self.crop_edit["center"], self.crop_edit["width"], CROP_RATIO,
@@ -1029,9 +1093,60 @@ class IndustrialDashboard:
                     "start": point, "kind": "move",
                     "center": np.asarray(self.crop_edit["center"], dtype=np.float64),
                 }
+        # A press that hits neither a handle nor the rectangle does nothing: a crop
+        # is defined by marking four corners, not by dragging out a new box.
+
+    def _collect_crop_mark(self, point):
+        """Take one of the four corner clicks and derive the crop on the fourth."""
+        self.crop_mark_points.append(point.tolist())
+        if len(self.crop_mark_points) < 4:
+            self.crop_status.configure(text=self._mark_progress_text())
+            self._redraw_crop_overlay()
+            return
+        # A fifth click starts a fresh mark, so a mistimed extra click is recoverable
+        # without leaving the mode.
+        if len(self.crop_mark_points) > 4:
+            self.crop_mark_points = [point.tolist()]
+            self.crop_status.configure(text=self._mark_progress_text())
+            self._redraw_crop_overlay()
+            return
+        height, width = self.crop_frozen_frame.shape[:2]
+        try:
+            self.crop_edit = four_point_crop(
+                self.crop_mark_points, (width, height), CROP_RATIO, CROP_MARGIN_PERCENT,
+            )
+        except ValueError as error:
+            # Keep the clicks on screen so the operator can see which corner is wrong.
+            self.crop_status.configure(
+                text=f"{error} — press MARK 4 POINTS to start again"
+            )
+            self._redraw_crop_overlay()
+            return
+        self.crop_edit_mode = "edit"
+        self._redraw_crop_overlay()
+        fits = definition_fits_image(
+            normalized_definition(
+                self.crop_edit["center"], self.crop_edit["width"],
+                self.crop_edit["angle_degrees"], self.crop_edit["line"],
+                (width, height),
+            ),
+            (width, height), CROP_RATIO,
+        )
+        if not fits:
+            self.crop_status.configure(
+                text=("Marked, but the margin pushes the crop outside the image — mark "
+                      "further from the edge, or lower crop_setup.margin_percent")
+            )
+            return
+        self.crop_status.configure(
+            text=(f"Marked {self.crop_edit['width']:.0f} x "
+                  f"{self.crop_edit['height']:.0f} px at "
+                  f"{self.crop_edit['angle_degrees']:.1f}° including margin — "
+                  "drag to adjust, then SAVE CROP")
+        )
 
     def on_crop_drag(self, event):
-        if not self.crop_frozen or self.crop_drag is None or self.crop_edit_mode == "line":
+        if not self.crop_frozen or self.crop_drag is None or self.crop_edit_mode == "mark":
             return
         point = self._canvas_to_crop_image(event.x, event.y)
         if point is None:
@@ -1039,7 +1154,14 @@ class IndustrialDashboard:
         start = self.crop_drag["start"]
         kind = self.crop_drag["kind"]
         if kind == "move":
-            self.crop_edit["center"] = (self.crop_drag["center"] + point - start).tolist()
+            delta = point - start
+            self.crop_edit["center"] = (self.crop_drag["center"] + delta).tolist()
+            # Move the marked corners with it, so the region can still be re-derived
+            # if the configured margin or ratio changes later.
+            if self.crop_edit.get("marked_quad"):
+                self.crop_edit["marked_quad"] = (
+                    np.asarray(self.crop_edit["marked_quad"], dtype=np.float64) + delta
+                ).tolist()
         elif kind == "resize":
             center = np.asarray(self.crop_edit["center"], dtype=np.float64)
             radians = math.radians(self.crop_edit.get("angle_degrees", 0.0))
@@ -1050,19 +1172,9 @@ class IndustrialDashboard:
             local = rotation_inverse @ (point - center)
             self.crop_edit["width"] = max(40.0, 2.0 * max(abs(local[0]), CROP_RATIO * abs(local[1])))
             self.crop_edit["height"] = self.crop_edit["width"] / CROP_RATIO
-        else:
-            delta = point - start
-            width = max(abs(delta[0]), CROP_RATIO * abs(delta[1]), 40.0)
-            adjusted = np.array([
-                math.copysign(width, delta[0] if delta[0] else 1),
-                math.copysign(width / CROP_RATIO, delta[1] if delta[1] else 1),
-            ])
-            self.crop_edit = {
-                "center": (start + adjusted / 2.0).tolist(),
-                "width": width, "height": width / CROP_RATIO,
-                "angle_degrees": 0.0, "line": [],
-            }
-            self.crop_line_points = []
+            # A resized box no longer follows from the marked corners, so drop them
+            # rather than let a later margin change silently undo this adjustment.
+            self.crop_edit.pop("marked_quad", None)
         self._redraw_crop_overlay()
 
     def on_crop_release(self, _event):
@@ -1077,6 +1189,13 @@ class IndustrialDashboard:
 
         self.images_container = tk.Frame(self.image_panel, bg=C["bg"])
         self.images_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 6))
+        # The inspection result swaps the whole container out for a tabbed crop
+        # viewer, so the options are stored rather than repeated at restore time.
+        self.images_container_pack_opts = {
+            'fill': tk.BOTH, 'expand': True, 'padx': 10, 'pady': (10, 6),
+        }
+        # Built lazily on the first inspection, so startup pays nothing for it.
+        self.result_view = None
 
         # ---- left ----
         self.left_frame = themed_card(self.images_container, bg=C["surface"])
@@ -1254,6 +1373,15 @@ class IndustrialDashboard:
             return
         cycle_started = time.perf_counter()
         if self.video_paused:
+            # While paused this tick is what animates the inspection spinner.
+            # The re-arm stays outside the guard: a failure to draw must never
+            # leave the preview permanently stopped.
+            try:
+                view = getattr(self, 'result_view', None)
+                if view is not None:
+                    view.tick()
+            except Exception as error:
+                print(f"Spinner frame skipped: {error}")
             self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
             return
 
@@ -1335,11 +1463,102 @@ class IndustrialDashboard:
         canvas.tag_lower("img")
 
     # ==============================================================
+    # inspection result – crops on screen until the operator resumes
+    # ==============================================================
+    def _publish_crop_progress(self, crop_index, image, busy):
+        """Worker thread: hand one crop's state to the UI thread.
+
+        Called from the detection thread, so the update is always applied by a
+        marshalled callback. The generation is captured now and checked on the
+        main thread, which makes a publish that arrives after the inspection has
+        finished a no-op instead of touching a dismissed view.
+        """
+        generation = getattr(self, 'detection_generation', 0)
+        self.root.after(
+            0, self._apply_crop_progress, crop_index, image, busy, generation,
+        )
+
+    def _apply_crop_progress(self, crop_index, image, busy, generation):
+        """Main thread: update one crop tab, if it is still the current run's."""
+        if generation != getattr(self, 'detection_generation', 0):
+            return
+        # The generation alone is not enough: the view can be destroyed before
+        # the generation is bumped, and a queued callback cannot be cancelled.
+        view = getattr(self, 'result_view', None)
+        if view is None or not view.winfo_exists():
+            return
+        view.update_crop(crop_index, image, busy)
+
+    def _present_detection_result(self, camera_num, crops):
+        """Main thread: show the crops and hold them until the operator resumes."""
+        if self.result_view is None:
+            self.result_view = CropResultView(
+                self.image_panel, self.start_live_preview,
+                title=f"CAMERA {camera_num} RESULT",
+            )
+        self.images_container.pack_forget()
+        self.result_view.pack(side=tk.TOP, **self.images_container_pack_opts)
+        self.result_view.show_crops(crops, self._first_uploading_crop(camera_num))
+        # The result is on screen before the upload starts, so the button waits
+        # for _inspection_worker_done: releasing inspection_busy now would let a
+        # second inspection run alongside the worker still in _detect_crops.
+        self.result_view.set_resume_enabled(False)
+        self.set_pass_fail("RESULT")
+        # Report here rather than at the resume press: the ESP32 gives the
+        # inspection 60 seconds from its ACK, after which it turns red and
+        # discards a late DONE.
+        self._report_detection_status(True)
+
+    def _first_uploading_crop(self, camera_num):
+        """The 0-based tab to open on, so the spinner is visible immediately."""
+        selected = CONFIG['sam_detection']['send_crops'].get(str(camera_num)) or []
+        for index, wanted in enumerate(selected):
+            if wanted:
+                return index
+        return 0
+
+    def _dismiss_result_view(self):
+        """Put the dual camera view back in place of the result."""
+        if self.result_view is None:
+            return
+        self.result_view.pack_forget()
+        self.result_view.destroy()
+        self.result_view = None
+        self.images_container.pack(**self.images_container_pack_opts)
+
+    def start_live_preview(self):
+        """The START LIVE PREVIEW button: drop the result and resume the feed."""
+        self._dismiss_result_view()
+        self.restore_dual_view()
+        # The paused preview loop is still armed, so _finish_detection is all it
+        # takes for the next tick to draw live frames again. Restarting the
+        # stream here would risk a second preview timer.
+        self._finish_detection()
+
+    def _inspection_worker_done(self):
+        """Queued from the detection thread's finally: the button may go live."""
+        view = getattr(self, 'result_view', None)
+        if view is None or not view.winfo_exists():
+            return
+        # A crop whose upload raised never publishes busy=False, and one dropped
+        # by the generation guard never arrives at all, so clear what is left.
+        view.mark_all_idle()
+        view.set_resume_enabled(True)
+
+    def reset_dashboard(self):
+        """The RESET button: never leave a held result blocking the dashboard."""
+        self._dismiss_result_view()
+        self._finish_detection(completed=False)
+        # Last, so the callback's own status refresh has the final word.
+        self.on_reset_callback()
+
+    # ==============================================================
     # status / progress helpers
     # ==============================================================
     def set_pass_fail(self, status):
         colours = {"PASS": C["success"], "FAIL": C["danger"],
                    "READY": C["muted"], "LIVE": C["accent"],
+                   "RESULT": C["accent"],
                    "WARNING": C["warning"], "SETUP": C["warning"]}
         self.status_result_label.config(text=status, fg=colours.get(status, C["muted"]))
 
@@ -1382,6 +1601,11 @@ class IndustrialDashboard:
         self.detect_btn_L.config(state=tk.DISABLED)
         self.detect_btn_R.config(state=tk.DISABLED)
         self.video_paused = True
+        # The bumped generation retires any progress publish still queued from a
+        # previous run, and this run has its own outcome to report, so nothing
+        # from the last one may be re-sent for it.
+        self.detection_generation = getattr(self, 'detection_generation', 0) + 1
+        self._serial_reported_side = None
 
         # Start a thread that does the detection
         threading.Thread(target=self._run_detection, args=(side,), daemon=True).start()
@@ -1393,8 +1617,14 @@ class IndustrialDashboard:
         except Exception as error:
             print(f"Inspection {side} failed: {error}")
             self.root.after(0, self._inspection_failed)
+        finally:
+            # Runs even on a crash: this is what lets the operator resume, so a
+            # failure can never leave the result view permanently held.
+            self.root.after(0, self._inspection_worker_done)
 
     def _inspection_failed(self):
+        # A failure must not trap the operator behind the resume button.
+        self._dismiss_result_view()
         self.restore_dual_view()
         self._finish_detection(completed=False)
         self.set_pass_fail("WARNING")
@@ -1404,13 +1634,11 @@ class IndustrialDashboard:
         """Save full frames and prepare two independent deskewed model inputs."""
         if side == "L":
             camera_num = 1
-            canvas = self.canvas_1
             cam_name = "Camera 1"
             _, frame = self.camera1.get_raw_frame_with_ret()
             frame_undist = self.camera1.get_undistorted_frame()
         else:
             camera_num = 2
-            canvas = self.canvas_2
             cam_name = "Camera 2"
             _, frame = self.camera2.get_raw_frame_with_ret()
             frame_undist = self.camera2.get_undistorted_frame()
@@ -1450,52 +1678,25 @@ class IndustrialDashboard:
             crops.append(crop)
             print(f"Camera {camera_num} Crop {crop_index} saved: {crop_path}")
 
+        # Put the crops on screen before the upload starts: the operator sees
+        # what is being inspected while the network call is in flight, and can
+        # switch tabs between the two crops.
+        self.root.after(0, self._present_detection_result, camera_num, crops)
+
         display_crops, detection_warnings = self._detect_crops(
             camera_num, timestamp, crops, frame_undist.shape[:2][::-1],
+            progress=self._publish_crop_progress,
         )
-        display_frame = stack_crop_results(display_crops)
-        self.root.after(
-            0, lambda f=display_frame.copy(), c=camera_num: self._display_video_frame(f, c)
-        )
-        self.root.after(
-            0, self.update_progress, 100,
-            f"Camera {camera_num}: two deskewed crops prepared and saved",
-        )
-
-        # Maximize the selected camera on the main thread
-        self.root.after(0, lambda: self.maximize_camera(camera_num))
-
-        # Short delay to allow UI to update
-        time.sleep(1.2)
-
-        # Draw highlight border on the selected canvas
-        def highlight():
-            canvas.update_idletasks()
-            w = canvas.winfo_width()
-            h = canvas.winfo_height()
-            # Remove any existing highlight
-            canvas.delete("highlight")
-            canvas.create_rectangle(2, 2, w-2, h-2, outline="red", width=5, tags="highlight")
-            # Remove after 2 seconds
-            canvas.after(1000, lambda: canvas.delete("highlight"))
-
-        self.root.after(0, highlight)
+        # The only place this instruction is set: setting it when the result is
+        # presented would let this later callback overwrite it a tick later.
+        if detection_warnings:
+            self.root.after(0, self.set_pass_fail, "WARNING")
+            self.root.after(0, self.update_progress, 100, " | ".join(detection_warnings))
+        else:
+            self.root.after(0, self.update_progress, 100,
+                            "Inspection complete — press START LIVE PREVIEW to resume")
 
         print(f"Crop preprocessing completed for {cam_name} (size: {self.active_size})")
-
-        # Restore dual view on main thread
-        self.root.after(0, self.restore_dual_view)
-
-        # Re-enable buttons and resume video on main thread. Detection warnings
-        # are applied afterwards because _finish_detection resets the status
-        # card and progress text back to LIVE.
-        def finish():
-            self._finish_detection()
-            if detection_warnings:
-                self.set_pass_fail("WARNING")
-                self.update_progress(100, " | ".join(detection_warnings))
-
-        self.root.after(0, finish)
 
     def _strip_scale(self, camera_num, crop_index, frame_size, warnings):
         """The crop's millimetre scale, or None when it cannot be built.
@@ -1526,6 +1727,7 @@ class IndustrialDashboard:
             definitions = self.crop_definitions['cameras'][str(camera_num)]
             return plane_scale.load_plane_scale(
                 camera_num, definitions[crop_index - 1], size,
+                CROP_OUTPUT_SIZE, ratio=CROP_RATIO,
             )
         except (plane_scale.PlaneScaleError, IndexError, KeyError) as error:
             print(f"Camera {camera_num} Crop {crop_index}: measuring in pixels "
@@ -1542,13 +1744,20 @@ class IndustrialDashboard:
             return None
         return (int(size[0]), int(size[1]))
 
-    def _detect_crops(self, camera_num, timestamp, crops, frame_size=None):
+    def _detect_crops(self, camera_num, timestamp, crops, frame_size=None, progress=None):
         """Run SAM detection on the configured crops; return what to display.
 
         Returns the crop images to stack (annotated where detection ran) and a
         list of warning strings. This never raises: a failed call leaves the raw
         crop in place and is reported instead, so a network problem can never
         lose an inspection.
+
+        ``progress`` is an optional callback taking ``(crop_index, image, busy)``,
+        used by the dashboard to show each crop in its own tab and mark the one
+        currently uploading. ``busy`` is True immediately before an upload starts
+        and False once that crop's result is ready. It is not called on the early
+        return below, so a caller that only inspects the result pays nothing and
+        needs no dashboard state.
         """
         settings = CONFIG['sam_detection']
         selected = settings['send_crops'][str(camera_num)]
@@ -1565,9 +1774,17 @@ class IndustrialDashboard:
 
         display = list(crops)
         warnings = []
-        for crop_index, crop in enumerate(crops, start=1):
-            if not selected[crop_index - 1]:
-                continue
+        # Only the selected crops are uploaded, so the spinner must follow that
+        # order rather than the tab order: with the shipped config the first (and
+        # only) upload is crop 2, and stepping by index would leave the spinner
+        # running over a crop that is never processed.
+        upload_order = [
+            index for index in range(1, len(crops) + 1) if selected[index - 1]
+        ]
+        for crop_index in upload_order:
+            crop = crops[crop_index - 1]
+            if progress is not None:
+                progress(crop_index, display[crop_index - 1], True)
             image_size = (crop.shape[1], crop.shape[0])
             detection = sam_detection.detect_crop(
                 crop, prompt, jpeg_quality=quality, timeout_seconds=timeout,
@@ -1623,17 +1840,45 @@ class IndustrialDashboard:
             if detection.error:
                 warnings.append(f"Crop {crop_index}: {detection.error}")
 
+            # This tab now shows its own result, so its spinner stops. A crop
+            # that was never uploaded is never published at all, and keeps no
+            # marker rather than claiming a check that did not happen.
+            if progress is not None:
+                progress(crop_index, display[crop_index - 1], False)
+
         return display, warnings
 
+    def _report_detection_status(self, completed=True):
+        """Tell the ESP32 how the request ended, once per outcome.
+
+        Called as soon as the result is presented rather than when the operator
+        resumes: the board allows the inspection 60 seconds from its ACK, after
+        which it turns red and discards a late DONE. Clearing the pending side
+        here is what makes the later call from _finish_detection a no-op, while
+        the side is remembered separately so a failure arriving after the result
+        was shown can still report itself.
+        """
+        side = getattr(self, '_serial_pending_side', None)
+        self._serial_pending_side = None
+        if side is None:
+            # Only a failure may report again once completion has been sent.
+            if completed:
+                return
+            side = getattr(self, '_serial_reported_side', None)
+            if side is None:
+                return
+        self._serial_reported_side = side
+        self._send_serial_status(
+            f"{side}_{'DONE' if completed else 'ERROR'}"
+        )
+
     def _finish_detection(self, completed=True):
+        self._report_detection_status(completed)
         self.video_paused = False
         self.inspection_busy = False
-        serial_side = getattr(self, '_serial_pending_side', None)
-        self._serial_pending_side = None
-        if serial_side is not None:
-            self._send_serial_status(
-                f"{serial_side}_{'DONE' if completed else 'ERROR'}"
-            )
+        # Retire any progress publish still queued: the bumped generation turns
+        # it into a no-op rather than a draw on a dismissed view.
+        self.detection_generation = getattr(self, 'detection_generation', 0) + 1
         self._refresh_inspection_availability()
 
     # ==============================================================

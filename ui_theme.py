@@ -37,6 +37,13 @@ COLORS = {
 FONT = "Segoe UI"
 MONO_FONT = "Cascadia Mono"
 
+
+def hex_to_bgr(value):
+    """Convert a ``#RRGGBB`` colour to the ``(blue, green, red)`` tuple OpenCV wants."""
+    digits = value.lstrip("#")
+    red, green, blue = (int(digits[index:index + 2], 16) for index in (0, 2, 4))
+    return blue, green, red
+
 BUTTON_ROLES = {
     "primary": (COLORS["accent_dark"], COLORS["accent_hover"], COLORS["text"]),
     "blue": (COLORS["blue"], COLORS["blue_hover"], "#FFFFFF"),

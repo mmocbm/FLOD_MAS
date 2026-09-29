@@ -20,13 +20,11 @@ class InspectionCropPreparationTests(unittest.TestCase):
         app.camera1.get_undistorted_frame.return_value = frame.copy()
         app.camera2 = MagicMock()
         app.active_size = 'M'
-        app.canvas_1 = MagicMock()
-        app.canvas_1.winfo_width.return_value = 450
-        app.canvas_1.winfo_height.return_value = 300
         app.root = MagicMock()
         app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
         app.update_progress = MagicMock()
         app._display_video_frame = MagicMock()
+        app._present_detection_result = MagicMock()
         app.maximize_camera = MagicMock()
         app.restore_dual_view = MagicMock()
         app._finish_detection = MagicMock()
@@ -48,12 +46,25 @@ class InspectionCropPreparationTests(unittest.TestCase):
             app._simulate_detection('L')
 
         self.assertEqual(imwrite.call_count, 4)
-        app._display_video_frame.assert_called_once()
+        # The crops go on screen before any upload and stay there until the
+        # operator resumes, so none of the old transient-display machinery runs.
+        app._present_detection_result.assert_called_once()
+        shown_camera, shown_crops = app._present_detection_result.call_args.args
+        self.assertEqual(shown_camera, 1)
+        self.assertEqual([crop.shape[:2] for crop in shown_crops],
+                         [(552, 2208), (552, 2208)])
+        app._display_video_frame.assert_not_called()
+        app.maximize_camera.assert_not_called()
+        app.restore_dual_view.assert_not_called()
+        # The inspection is not finished here: START LIVE PREVIEW does that.
+        app._finish_detection.assert_not_called()
+        # The 1.2s pause and the red highlight existed only to make the
+        # maximized view readable, which the held result replaces.
+        _sleep.assert_not_called()
         self.assertTrue(any(
-            'two deskewed crops prepared' in str(call)
+            'START LIVE PREVIEW' in str(call)
             for call in app.update_progress.call_args_list
         ))
-        app._finish_detection.assert_called_once()
 
 
 if __name__ == '__main__':

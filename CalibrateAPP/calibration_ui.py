@@ -21,7 +21,7 @@ from tkinter import messagebox, scrolledtext, ttk
 from PIL import Image, ImageTk
 from ui_theme import (
     COLORS as C, FONT, MONO_FONT, button as themed_button, card as themed_card,
-    configure_ttk, section_label, set_button_role, status_dot,
+    configure_ttk, hex_to_bgr, section_label, set_button_role, status_dot,
 )
 
 try:
@@ -916,9 +916,7 @@ class CalibrationApp:
 
     @staticmethod
     def _hex_to_bgr(value):
-        value = value.lstrip("#")
-        red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
-        return blue, green, red
+        return hex_to_bgr(value)
 
     def _show_frame(self, frame):
         width = max(2, self.video_label.winfo_width())
