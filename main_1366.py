@@ -561,6 +561,7 @@ class IndustrialDashboard:
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         if self.camera1: self.camera1.reload_calibration()
         if self.camera2: self.camera2.reload_calibration()
+        self.strip_scales.clear()
         self.start_video_stream()
 
     def _setup_camera_stream(self, index):

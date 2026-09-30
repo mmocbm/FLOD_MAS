@@ -25,12 +25,14 @@ The data folder contains:
 - `calibration_images/`: surface reference and annotated images.
 - `temp_calibration_images/`: calibration capture photos.
 - `temp_uploads/`: temporary upload JPEGs, deleted after each request.
-- `results/`: standalone accuracy and image-processing helper results.
+- Legacy helper results may remain in the data folder as historical files; the
+  current dashboard does not load them.
 
 On the first run, saved data is moved from the previous Documents/MAS Unichela
 folder and from the code folder into Documents/data files. This includes historical
 inspection captures, calibration photos, results, profiles, patterns, and standalone
-helper images. Code, models, `config.json`, and the UI theme preview stay with the code.
+helper images. Application source and `config.json` stay with the code. The legacy
+measurement and U-Net helpers have been removed from the current dashboard project.
 Existing destination files are preserved. Identical duplicates are removed from the
 old location; different files with matching names are retained under
 `.migration_conflicts/`. Only empty source folders are removed. A migration marker
@@ -304,6 +306,23 @@ is sent as an authorization header, never in the URL.
 
 ## Board and camera setup
 
+To replace an existing calibration, open Camera Setup, select and start the camera,
+then click **NEW CALIBRATION**. Capture new lens photos (intrinsic calibration),
+then place the board flat on the measurement surface and save it (extrinsic
+calibration). In saved-surface mode the old JSON files remain active until both
+new stages succeed. Saving the surface replaces the selected camera's intrinsic
+and extrinsic files in Documents/data files. Failed writes restore the old JSON
+data; abandoning an unfinished setup leaves the old calibration unchanged.
+
+After saving, return to the dashboard to load the new calibration and clear cached
+measurement scales. Any region homographies for that camera are invalidated and
+must be calibrated again. Crop definitions are retained; re-mark them if the camera
+or fabric setup moved. The other camera's calibration is unchanged.
+
+When saved-surface mode is disabled, only the intrinsic calibration is stored;
+the marker supplies the measurement plane during inspection, and old stored
+extrinsics are removed when saving the new lens calibration.
+
 `board` describes the physical printed board: number of squares, square and marker
 sizes in millimetres, and OpenCV dictionary name. These must match the actual board.
 `calibration` controls the required photo count, minimum valid photos/corners and
@@ -546,8 +565,7 @@ crop points through the region homography.
 - `serial`: Arduino connection enabled, port and baud rate.
 - `inspection`: selectable sizes, starting size, required strip width in millimetres,
   allowed plus/minus width tolerance, and result display time per crop.
-- `color_mask`: legacy values retained for the standalone colour-mask helper; the
-  dashboard's new crop workflow does not use them.
+- `color_mask`: retained legacy values; the current dashboard does not use them.
 
 Keep JSON syntax valid (double quotes, no trailing commas). Invalid key settings
 are rejected on startup. No extra packages are required for configuration.

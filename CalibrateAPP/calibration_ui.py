@@ -13,6 +13,7 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app_config import CONFIG, DATA_ROOT, camera_config, project_path
 from camera_handler import CameraStream
+from CalibrateAPP.calibration_store import replace_calibration_files
 # The optional per-region homography mode. Imported at module level like the other
 # runtime modules, but nothing below this line changes because of it: the existing checks
 # neither read nor call any of it.
@@ -144,6 +145,7 @@ class CalibrationApp:
         self.calibration_image_size = None
         self.use_two_boards = TWO_BOARD_DEFAULT
         self.pending_dual_capture = None
+        self.pending_intrinsics = None
 
         FILES_DIR.mkdir(exist_ok=True)
         TEMP_ROOT.mkdir(exist_ok=True)
@@ -359,6 +361,11 @@ class CalibrationApp:
             BLUE, 28, tk.DISABLED,
         )
         self.capture_btn.pack(fill=tk.X)
+        self.recalibrate_btn = self._button(
+            capture_box, "NEW CALIBRATION", self.begin_new_calibration,
+            PURPLE, 28, tk.DISABLED,
+        )
+        self.recalibrate_btn.pack(fill=tk.X, pady=(6, 0))
         tk.Label(
             capture_box,
             text="Follow the highlighted area. Also tilt the board differently after each photo.",
@@ -567,7 +574,63 @@ class CalibrationApp:
             state=(tk.NORMAL if SURFACE_SETUP_ENABLED and self.camera_running
                    and self.stage == "extrinsic_ready" else tk.DISABLED)
         )
+        if hasattr(self, 'recalibrate_btn'):
+            self.recalibrate_btn.configure(
+                state=(tk.NORMAL if self.camera_running and not self.processing_capture
+                       and not self.processing_verification
+                       and self.stage not in ('calibrating', 'extrinsic_capturing')
+                       else tk.DISABLED))
         self._refresh_check_panel_buttons()
+
+    def begin_new_calibration(self):
+        """Start new lens photos without deleting the currently saved calibration."""
+        if (not self.camera_running or self.processing_capture or self.processing_verification
+                or self.stage in ('calibrating', 'extrinsic_capturing')):
+            return
+        self._close_calibration_checks()
+        self.stage = 'capture'
+        self.pending_intrinsics = None
+        self.pending_dual_capture = None
+        self.captured_images = []
+        self.object_views = []
+        self.image_views = []
+        self.capture_image_size = None
+        self.capture_centers = []
+        self.capture_point_sets = []
+        self.coverage_counts.fill(0)
+        self.camera_matrix = None
+        self.dist_coeffs = None
+        self.calibration_image_size = None
+        self.progress['value'] = 0
+        self.capture_info.configure(text=f'0 / {NUM_CAPTURES} accepted')
+        self.guidance_info.configure(text='Move and tilt the board for new lens photos', fg=AMBER)
+        session_dir = TEMP_ROOT / f'camera_{self.camera_index}'
+        for pattern in ('calib_*.jpg', 'calib_*.png'):
+            for photo in session_dir.glob(pattern):
+                photo.unlink()
+        self._set_status('New calibration — capture lens photos first', AMBER)
+        self.log('Starting a new calibration. Saved data stays unchanged until the new setup is saved.')
+        self._refresh_stage_ui()
+
+    def _save_calibration(self, intrinsics=None, extrinsics=None):
+        updates = {}
+        if intrinsics is not None:
+            updates[self._calibration_path()] = intrinsics
+        if extrinsics is not None:
+            updates[self._extrinsics_path()] = extrinsics
+        elif intrinsics is not None:
+            # Marker mode does not use stored surface calibration.
+            updates[self._extrinsics_path()] = None
+        if intrinsics is not None or extrinsics is not None:
+            region_path = Path(project_path(CONFIG.get('region_homography', {}).get(
+                'store_file', 'Files/region_homographies.json')))
+            if region_path.exists():
+                store = json.loads(region_path.read_text(encoding='utf-8'))
+                number = str(next(i + 1 for i, camera in enumerate(CONFIG['cameras'])
+                                  if camera['index'] == self.camera_index))
+                store.setdefault('cameras', {})[number] = {}
+                updates[region_path] = store
+        replace_calibration_files(updates)
 
     def _calibration_path(self, camera_index=None):
         index = self.camera_index if camera_index is None else camera_index
@@ -626,6 +689,7 @@ class CalibrationApp:
         self.dist_coeffs = None
         self.calibration_image_size = None
         self.pending_dual_capture = None
+        self.pending_intrinsics = None
         self.processing_verification = False
         unit = " photo sets" if self.use_two_boards else ""
         self.capture_info.configure(text=f"0 / {NUM_CAPTURES}{unit} accepted")
@@ -671,6 +735,7 @@ class CalibrationApp:
 
     def _camera_started(self, requested_width, requested_height):
         self.starting_camera = False
+        self.pending_intrinsics = None
         self.stage = "capture"
         self.start_btn.configure(text="START CAMERA", state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
@@ -969,7 +1034,8 @@ class CalibrationApp:
     def _refresh_check_panel_buttons(self):
         if not hasattr(self, 'check_panel'):
             return
-        busy = bool(self.processing_capture or self.processing_verification)
+        busy = bool(self.processing_capture or self.processing_verification
+                    or getattr(self, 'pending_intrinsics', None) is not None)
         if self.camera_index is None:
             self.check_lens_btn.configure(state=tk.DISABLED)
             self.check_measurement_btn.configure(state=tk.DISABLED)
@@ -1668,7 +1734,11 @@ class CalibrationApp:
                     "board_2_marker_ids": self.boards[1].getIds().reshape(-1).tolist(),
                     "views_per_photo_set": 2,
                 }
-            self._calibration_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+            if SURFACE_SETUP_ENABLED:
+                # Keep the old intrinsic/extrinsic pair until the new surface succeeds.
+                self.pending_intrinsics = data
+            else:
+                self._save_calibration(intrinsics=data)
             self.root.after(
                 0, self._intrinsic_complete, camera_matrix, dist_coeffs,
                 image_size, float(rms), len(object_views),
@@ -1732,16 +1802,17 @@ class CalibrationApp:
             fg=GREEN,
         )
         self._set_status(
-            "Camera setup complete. Place the board flat on the measurement surface.",
+            "Lens calibration calculated. Place the board flat on the measurement surface.",
             GREEN if rms <= MAX_INTRINSIC_RMS_PX else AMBER,
         )
         self.log(
-            f"Camera setup saved using {accepted_count} clear {accepted_name} "
+            f"New lens calibration calculated using {accepted_count} clear {accepted_name} "
             f"({valid_views} board views)"
         )
         if rms > MAX_INTRINSIC_RMS_PX:
             self.log("Quality warning: results may improve with clearer photos and better lighting.")
         self.log("NEXT: Place the board flat on the final measurement surface.")
+        self.log('Save the surface to replace both intrinsic and extrinsic calibration files.')
         self.log("Do not move the camera after saving the measurement surface.")
         self._refresh_stage_ui()
 
@@ -1804,12 +1875,14 @@ class CalibrationApp:
 
             reference_path = REFERENCE_DIR / f"extrinsic_reference_{self.camera_index}.jpg"
             annotated_path = REFERENCE_DIR / f"extrinsic_reference_{self.camera_index}_annotated.jpg"
-            cv2.imwrite(str(reference_path), frame)
+            if not cv2.imwrite(str(reference_path), frame):
+                raise OSError('The measurement surface reference image could not be saved')
             annotated = self._annotate_detected_board(frame, corners, ids)
             cv2.drawFrameAxes(
                 annotated, camera_matrix, self.dist_coeffs, rvec, tvec, 0.05, 4,
             )
-            cv2.imwrite(str(annotated_path), annotated)
+            if not cv2.imwrite(str(annotated_path), annotated):
+                raise OSError('The annotated measurement surface image could not be saved')
 
             reference_board_tvec = tvec.copy()
             measurement_tvec = (
@@ -1843,7 +1916,9 @@ class CalibrationApp:
                                    if self.use_two_boards else CONFIG['board']['dictionary']),
                 },
             }
-            self._extrinsics_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+            self._save_calibration(
+                intrinsics=getattr(self, 'pending_intrinsics', None), extrinsics=data)
+            self.pending_intrinsics = None
             self.root.after(
                 0, self._extrinsic_complete, annotated, metrics,
                 measurement_tvec, thickness_enabled, thickness_mm,

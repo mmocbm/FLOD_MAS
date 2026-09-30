@@ -190,6 +190,7 @@ class PerCaptureProcessingTests(unittest.TestCase):
         app._calibration_failed = MagicMock()
         calibration_path = MagicMock()
         app._calibration_path = MagicMock(return_value=calibration_path)
+        app._save_calibration = MagicMock()
         app.coverage_counts = np.ones((3, 3), np.int32)
         app.capture_centers = [(0.5, 0.5)]
         app.is_calibrating = False
@@ -218,7 +219,12 @@ class PerCaptureProcessingTests(unittest.TestCase):
 
         app._calibrate_intrinsics_worker(object_views, image_views, (1200, 900))
 
-        calibration_path.write_text.assert_called_once()
+        if calibration_ui.SURFACE_SETUP_ENABLED:
+            calibration_path.write_text.assert_not_called()
+            self.assertEqual(app.pending_intrinsics['image_size'], [1200, 900])
+            app._save_calibration.assert_not_called()
+        else:
+            app._save_calibration.assert_called_once()
         app._intrinsic_complete.assert_called_once()
         self.assertTrue(np.isfinite(app._intrinsic_complete.call_args.args[0]).all())
         app._calibration_failed.assert_not_called()

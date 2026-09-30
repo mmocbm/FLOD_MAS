@@ -1,13 +1,12 @@
 # Complete direct runtime dependencies for the vision-inspection application.
-# Fully tested with Python 3.12 and 3.13 on Windows. Use Python 3.10-3.13
-# because the pinned TensorFlow release does not provide Python 3.14 wheels.
+# Tested with Python 3.12 and 3.13 on Windows.
 #
 # Install with:
 #   python -m pip install -r requirements.txt
 #
 # tkinter is supplied by the standard Windows Python installer and is not a
 # separately installable PyPI package. Pip installs transitive dependencies
-# (such as Keras, h5py, joblib and ImageIO) automatically from the pins below.
+# automatically from the pins below.
 
 # Numerical arrays and image processing.
 # These two are held back by inference-sdk, which requires numpy<2.4 and
@@ -28,7 +27,3 @@ inference-sdk==1.7.1
 # Geometry, morphology, skeleton and measurement algorithms
 scipy==1.18.1
 scikit-image==0.26.0
-scikit-learn==1.9.1
-
-# Legacy U-Net model loader used by unet/predictor.py
-tensorflow==2.21.0
