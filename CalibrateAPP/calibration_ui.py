@@ -452,7 +452,8 @@ class CalibrationApp:
         if self.closed:
             return
         remaining = self._scroll_remaining
-        step = remaining if abs(remaining) < 2 else remaining * 0.35
+        # Apply wheel movement immediately; no easing/animation timer.
+        step = remaining
         self._scroll_remaining -= step
         bounds = self.controls_canvas.bbox(self._controls_window)
         if bounds:

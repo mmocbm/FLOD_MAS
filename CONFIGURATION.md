@@ -6,8 +6,8 @@ Edit `config.json` in the main directory, then restart the application.
 
 The first camera is the dashboard's left view; the second is the right view.
 For each camera, set `index`, `width`, `height`, and `fps` to a mode supported by
-your camera. Defaults are 2560 × 1440 at a requested 30 FPS, matching the existing
-calibration image sizes. `fps` is a driver request, not a guaranteed throughput.
+your camera. Defaults are 4608 × 3456 at a requested 10 FPS to reduce continuous
+capture load. `fps` is a driver request, not a guaranteed throughput.
 `fourcc` can be left blank to use the driver's format, or set to a supported
 four-character format such as `MJPG`. Calibration and surface files are relative
 to this directory unless an absolute path is supplied.
@@ -48,10 +48,33 @@ a processing operation requests it, not on every live preview frame.
 ## Preview
 
 `max_width` and `max_height` limit copies used for dashboard/setup previews;
-`interval_ms` controls preview refresh (66 ms is approximately 15 updates/second).
-Lower these for lighter display work. They do not change the camera capture size
+`interval_ms` controls preview refresh (100 ms defaults to at most 10 updates/second).
+Lower the dimensions or increase the interval for lighter display work. The dashboard
+leaves idle time after rendering and slows further if rendering is expensive.
+They do not change the camera capture size
 or the original image used for calculations. Crop editing still maps its display
 coordinates back to the full-resolution captured image.
+
+Live previews use linear interpolation, which may show more aliasing than area
+averaging but avoids scanning every source pixel for each small preview. Frozen
+crop editing retains area interpolation. Dashboard frames are redrawn only when
+the snapshot, canvas or canvas size changes. Setup scrolling is immediate and
+inspection busy indicators are static; progress and result countdowns still work.
+
+## CPU budget
+
+`performance.opencv_threads` defaults to `1`, limiting OpenCV's internal worker
+pool. Camera acquisition and inspection still run in separate application threads.
+This reduces competition for CPU cores; it does not cap total application CPU use
+or control NumPy/SciPy, camera driver or inference SDK threads. Increasing it may
+speed up a single inspection on faster PCs at the cost of more CPU use.
+
+Both cameras still acquire full-resolution frames while results are visible, so
+the next inspection receives a recent image. Sleeping between camera reads can
+leave stale frames in driver buffers and is deliberately avoided. If a driver
+ignores 10 FPS, select a supported lower-FPS camera mode. Lowering resolution can
+reduce load further, but verify calibration, crop regions and measurement accuracy
+before using a different resolution in production.
 
 ## Manual crop setup
 

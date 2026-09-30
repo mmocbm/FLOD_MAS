@@ -1070,7 +1070,8 @@ class IndustrialDashboard:
         scale = min(canvas_width / image_width, canvas_height / image_height)
         display_size = (max(1, round(image_width * scale)),
                         max(1, round(image_height * scale)))
-        resized = cv2.resize(frame, display_size, interpolation=cv2.INTER_AREA)
+        resized = cv2.resize(frame, display_size,
+                             interpolation=cv2.INTER_AREA if self.crop_frozen else cv2.INTER_LINEAR)
         self.crop_display_scale = scale
         self.crop_display_offset = ((canvas_width - display_size[0]) / 2.0,
                                     (canvas_height - display_size[1]) / 2.0)
@@ -1455,21 +1456,20 @@ class IndustrialDashboard:
             return
         cycle_started = time.perf_counter()
         if self.video_paused:
-            # While paused this tick is what animates the inspection spinner.
-            # The re-arm stays outside the guard: a failure to draw must never
-            # leave the preview permanently stopped.
-            try:
-                view = getattr(self, 'result_view', None)
-                if view is not None:
-                    view.tick()
-            except Exception as error:
-                print(f"Spinner frame skipped: {error}")
-            self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
+            # Progress is event-driven; leave the busy indicator static. Keep a
+            # cheap resume check for failure paths that only clear video_paused.
+            self._video_job = self.root.after(250, self.update_video_feed)
             return
 
-        # Read frames from both cameras (we need both to keep them alive)
-        ret1, raw1 = self.camera1.get_raw_frame_with_ret()
-        ret2, raw2 = self.camera2.get_raw_frame_with_ret()
+        # Capture threads drain devices independently. Hidden views need no
+        # snapshot/rotation work, especially with 16-megapixel cameras.
+        selected = (self.crop_selected_camera if getattr(self, 'crop_setup_active', False)
+                    else self.maximized_camera)
+        frozen = getattr(self, 'crop_setup_active', False) and self.crop_frozen
+        ret1, raw1 = (self.camera1.get_raw_frame_with_ret()
+                      if selected in (None, 1) and not frozen else (False, None))
+        ret2, raw2 = (self.camera2.get_raw_frame_with_ret()
+                      if selected in (None, 2) and not frozen else (False, None))
 
         if getattr(self, "crop_setup_active", False):
             if not self.crop_frozen:
@@ -1494,11 +1494,12 @@ class IndustrialDashboard:
         elif ret2:
             self._display_video_frame(raw2, 2)
 
-        # Tk's after() delay begins only after this callback returns. Subtract
-        # processing time so the configured interval represents frame-to-frame
-        # cadence instead of processing time plus another full interval.
+        # Leave idle time between frames so input events and other applications
+        # can run even when this machine cannot sustain the requested cadence.
         elapsed_ms = (time.perf_counter() - cycle_started) * 1000.0
-        delay_ms = max(1, round(CONFIG['preview']['interval_ms'] - elapsed_ms))
+        # Under load, yield at least one interval rather than saturating Tk
+        # with a 1 ms retry after every expensive frame.
+        delay_ms = max(CONFIG['preview']['interval_ms'], round(elapsed_ms))
         self._video_job = self.root.after(delay_ms, self.update_video_feed)
 
     def _display_video_frame(self, frame, canvas_num):
@@ -1525,12 +1526,19 @@ class IndustrialDashboard:
                 ch = WINDOW_HEIGHT - TITLE_BAR_HEIGHT - BOTTOM_PANEL_HEIGHT - 40
 
         frame_height, frame_width = frame.shape[:2]
-        preview_scale = min(cw / frame_width, ch / frame_height)
+        preview_scale = min(1.0, min(cw, CONFIG['preview']['max_width']) / frame_width,
+                            min(ch, CONFIG['preview']['max_height']) / frame_height)
+        previous = getattr(self, f'_preview_snapshot_{canvas_num}', None)
+        if (previous is not None and previous[0] is frame
+                and previous[1:] == (canvas, cw, ch) and canvas.find_withtag("img")):
+            return
         frame_resized = cv2.resize(
             frame,
             (max(1, int(frame_width * preview_scale)),
              max(1, int(frame_height * preview_scale))),
-            interpolation=cv2.INTER_AREA if preview_scale < 1 else cv2.INTER_LINEAR,
+            # Linear sampling touches a few source pixels per preview pixel;
+            # area averaging scans the entire full-resolution source image.
+            interpolation=cv2.INTER_LINEAR,
         )
         pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
 
@@ -1543,6 +1551,7 @@ class IndustrialDashboard:
         else:
             canvas.create_image(cw // 2, ch // 2, image=photo, anchor=tk.CENTER, tags="img")
         canvas.tag_lower("img")
+        setattr(self, f'_preview_snapshot_{canvas_num}', (frame, canvas, cw, ch))
 
     # ==============================================================
     # inspection result – crops on screen until the operator resumes

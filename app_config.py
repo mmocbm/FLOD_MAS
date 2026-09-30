@@ -5,6 +5,13 @@ import cv2
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+# Avoid two camera/processing workers each recruiting all CPU cores. This
+# limits OpenCV's internal pool, not acquisition or inspection worker threads.
+opencv_threads = CONFIG.get('performance', {}).get('opencv_threads', 1)
+if (isinstance(opencv_threads, bool) or not isinstance(opencv_threads, int)
+        or opencv_threads < 1):
+    raise ValueError("Performance opencv_threads must be a positive integer")
+cv2.setNumThreads(opencv_threads)
 if len(CONFIG["cameras"]) != 2:
     raise ValueError("config.json must specify two cameras")
 if len({c["index"] for c in CONFIG["cameras"]}) != 2:
