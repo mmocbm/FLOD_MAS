@@ -11,7 +11,7 @@ import sys
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app_config import CONFIG, camera_config, project_path
+from app_config import CONFIG, DATA_ROOT, camera_config, project_path
 from camera_handler import CameraStream
 # The optional per-region homography mode. Imported at module level like the other
 # runtime modules, but nothing below this line changes because of it: the existing checks
@@ -85,7 +85,7 @@ CROP_RATIO = (float(CONFIG['crop_setup']['aspect_ratio'][0])
               / float(CONFIG['crop_setup']['aspect_ratio'][1]))
 CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = DATA_ROOT
 FILES_DIR = PROJECT_ROOT / "Files"
 TEMP_ROOT = PROJECT_ROOT / "temp_calibration_images"
 REFERENCE_DIR = PROJECT_ROOT / "calibration_images"

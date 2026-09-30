@@ -28,7 +28,7 @@ if __package__ in (None, ''):
 
 import cv2
 
-from app_config import CONFIG, ROOT
+from app_config import CONFIG, DATA_ROOT, project_path
 import region_calibration
 
 # A4 printable width is about 200 mm, so a board is usually printed on whatever paper
@@ -55,8 +55,8 @@ def board_pixels(profile, dpi=DEFAULT_DPI, margin_mm=DEFAULT_MARGIN_MM):
 
 
 def board_profiles_path():
-    return ROOT / CONFIG.get("region_homography", {}).get(
-        "board_profiles_file", "Files/board_definitions.json")
+    return Path(project_path(CONFIG.get("region_homography", {}).get(
+        "board_profiles_file", "Files/board_definitions.json")))
 
 
 def load_profiles(path=None):
@@ -72,7 +72,7 @@ def generate_board(profile, output_dir=None, dpi=DEFAULT_DPI,
     profile.validate()
     board, margin, sheet = board_pixels(profile, dpi, margin_mm)
     width_mm, height_mm = profile.footprint_mm()
-    output_dir = Path(output_dir or ROOT / "Files" / "calibration_boards")
+    output_dir = Path(project_path(output_dir or 'Files/calibration_boards'))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     image = profile.build_board().generateImage(sheet, marginSize=margin, borderBits=1)

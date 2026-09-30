@@ -1,3 +1,10 @@
+
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
 import cv2
 import numpy as np
 import json
@@ -91,9 +98,9 @@ class ImageUndistorter:
 if __name__ == "__main__":
 
     # Paths (same style as MeasurementApp)
-    CALIB_FILE = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\Files\camera_calibration_1.json"
-    INPUT_IMAGE = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\captures\cam1\20260214_205426_238314.jpg"
-    OUTPUT_IMAGE = r"C:\Users\Obhash\Desktop\imges\un_1.jpg"
+    CALIB_FILE = str(data_path('Files/camera_calibration_1.json'))
+    INPUT_IMAGE = str(data_path('captures/cam1/20260214_205426_238314.jpg'))
+    OUTPUT_IMAGE = str(data_path('results/un_1.jpg'))
 
     try:
 

@@ -1,6 +1,40 @@
 # Application settings
 
-Edit `config.json` in the main directory, then restart the application.
+Start `main_1366.py` and press **S** (or click **Settings**) during the five-second countdown. Change values in the grouped settings tabs and click **Save & restart**. The app validates and saves `config.json`, then initializes the app immediately with the new settings. Settings are completed before configuration-dependent modules and cameras load, so no external Python relaunch or machine-specific executable path is required. Only `config.json` stays beside the application code, regardless of the launch directory. Invalid values leave the editor open and the saved file unchanged. **Cancel / start app** discards edits. If you do nothing for five seconds, the app starts with the current settings. You can still edit `config.json` manually if needed.
+
+
+## Saved data location
+
+The application detects the current user's standard Documents folder and stores its
+saved data inside **Documents/data files**. On Windows it uses the Known Folder API,
+so redirected, localized, and OneDrive Documents locations work without a username
+or drive letter in the code. Both reading and writing use this same folder, even
+when the app is launched from a shortcut or another working directory.
+
+`config.json` stays in the code directory. Its data-file settings, such as
+`Files/crop_regions.json`, are relative to Documents/data files. Old absolute
+settings paths are relocated into this folder; parent-directory escapes are rejected.
+Models and application source remain with the code.
+
+The data folder contains:
+
+- `Files/`: calibration JSON, crop definitions, profiles, region homographies,
+  camera resolution cache, pattern lengths, and generated board PNG/TXT files.
+- `Dataset_capture/Camera1/` and `Camera2/`: original frames, undistorted frames,
+  both crops, detection overlays, and detection/measurement JSON records.
+- `calibration_images/`: surface reference and annotated images.
+- `temp_calibration_images/`: calibration capture photos.
+- `temp_uploads/`: temporary upload JPEGs, deleted after each request.
+- `results/`: standalone accuracy and image-processing helper results.
+
+On the first run, saved data is moved from the previous Documents/MAS Unichela
+folder and from the code folder into Documents/data files. This includes historical
+inspection captures, calibration photos, results, profiles, patterns, and standalone
+helper images. Code, models, `config.json`, and the UI theme preview stay with the code.
+Existing destination files are preserved. Identical duplicates are removed from the
+old location; different files with matching names are retained under
+`.migration_conflicts/`. Only empty source folders are removed. A migration marker
+prevents repeated migration during normal startup.
 
 ## Cameras
 
@@ -10,7 +44,7 @@ your camera. Defaults are 4608 × 3456 at a requested 10 FPS to reduce continuou
 capture load. `fps` is a driver request, not a guaranteed throughput.
 `fourcc` can be left blank to use the driver's format, or set to a supported
 four-character format such as `MJPG`. Calibration and surface files are relative
-to this directory unless an absolute path is supplied.
+to the application data folder described below.
 
 `rotation` sets each camera's clockwise software rotation. Allowed values are `0`,
 `90`, `180`, and `270`. Rotation is applied in the shared camera stream, so setup,

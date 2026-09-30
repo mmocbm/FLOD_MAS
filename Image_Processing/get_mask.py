@@ -1,3 +1,10 @@
+
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
 import cv2
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -159,8 +166,8 @@ if __name__ == "__main__":
 
     predictor = SkeletonSegmentationPredictor()
 
-    IMAGE_PATH = r"C:\Users\Obhash\Desktop\imges\un_1.jpg"
-    OUTPUT_PATH = r"C:\Users\Obhash\Desktop\imges\mask_1.png"
+    IMAGE_PATH = str(data_path('results/un_1.jpg'))
+    OUTPUT_PATH = str(data_path('results/mask_1.png'))
     
     image_bgr = cv2.imread(IMAGE_PATH)
     if image_bgr is None:

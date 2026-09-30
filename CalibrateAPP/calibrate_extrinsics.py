@@ -19,9 +19,9 @@ SQUARES_X = CONFIG['board']['squares_x']
 SQUARES_Y = CONFIG['board']['squares_y']
 
 # Paths
-CALIB_FILE = "camera_calibration.json"
-REF_IMAGE_PATH = "calibration_images/20260206_005308_100473.jpg"  # Image with board on measurement plane
-OUTPUT_FILE = "camera_extrinsics.json"
+CALIB_FILE = project_path(CONFIG["cameras"][0]["calibration_file"])
+REF_IMAGE_PATH = project_path("calibration_images/20260206_005308_100473.jpg")  # Image with board on measurement plane
+OUTPUT_FILE = project_path(CONFIG["cameras"][0]["extrinsics_file"])
 
 def calibrate_extrinsics():
     """Compute board pose from reference image"""
@@ -132,7 +132,7 @@ def calibrate_extrinsics():
     vis_img = cv2.line(vis_img, origin, tuple(imgpts[2].ravel()), (0,255,0), 5)  # Y green
     vis_img = cv2.line(vis_img, origin, tuple(imgpts[3].ravel()), (255,0,0), 5)  # Z blue
     
-    output_vis = "reference_detected.jpg"
+    output_vis = project_path("calibration_images/reference_detected.jpg")
     cv2.imwrite(output_vis, vis_img)
     print(f"✓ Visualization saved to: {output_vis}")
     

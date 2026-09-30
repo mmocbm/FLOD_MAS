@@ -3,6 +3,13 @@ Distance Measurement Tool
 Interactive GUI for selecting points on undistorted images and measuring real-world distances.
 """
 
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
+
 import cv2
 try:
     from .runtime_config import CONFIG, project_path
@@ -22,8 +29,8 @@ SQUARES_X = CONFIG['board']['squares_x']
 SQUARES_Y = CONFIG['board']['squares_y']
 
 # Calibration files
-CALIB_FILE = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\Files\camera_calibration_0.json"
-EXTRINSICS_FILE = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\Files\camera_extrinsics_0.json"
+CALIB_FILE = str(data_path('Files/camera_calibration_0.json'))
+EXTRINSICS_FILE = str(data_path('Files/camera_extrinsics_0.json'))
 
 class MeasurementApp:
     def __init__(self, root):

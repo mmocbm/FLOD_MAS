@@ -20,7 +20,7 @@ import json
 
 # ==================== CONFIGURATION - CHANGE THESE ====================
 
-IMAGE_PATH = r"C:\Users\Obhash\Desktop\Factory_Day_14\2\captures\cam1\20260214_204811_426733.jpg"  # ← CHANGE THIS to your test image path
+IMAGE_PATH = project_path("captures/cam1/20260214_204811_426733.jpg")  # ← CHANGE THIS to your test image path
 
 
 # ChArUco board parameters (must match calibration)

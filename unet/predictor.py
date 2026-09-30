@@ -1,3 +1,10 @@
+
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import cv2
@@ -161,8 +168,8 @@ if __name__ == "__main__":
 
     # -------- Settings --------
     MODEL_PATH = r"unet\models\unet_AllAptern_CoveerdMask.h5"   # change to your model path
-    IMAGE_PATH = r"unet\20260203_003735_559270.jpg"   # change to your image path
-    OUTPUT_PATH = r"unet\result_mask.png"
+    IMAGE_PATH = str(data_path('unet/20260203_003735_559270.jpg'))   # change to your image path
+    OUTPUT_PATH = str(data_path('unet/result_mask.png'))
 
     IMG_SIZE = 256
     THRESHOLD = 0.5

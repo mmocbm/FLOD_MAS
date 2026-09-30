@@ -9,7 +9,7 @@ if __package__ in (None, ''):
 import cv2
 import numpy as np
 
-from app_config import CONFIG, ROOT
+from app_config import CONFIG, project_path
 
 
 def generate_two_boards(output_dir=None, pixels_per_square=200):
@@ -20,7 +20,7 @@ def generate_two_boards(output_dir=None, pixels_per_square=200):
     )
     marker_count = (board_config['squares_x'] * board_config['squares_y']) // 2
     starts = (0, dual_config['second_board_start_id'])
-    output_dir = Path(output_dir or ROOT / 'Files' / 'calibration_boards')
+    output_dir = Path(project_path(output_dir or 'Files/calibration_boards'))
     output_dir.mkdir(parents=True, exist_ok=True)
     size = (
         board_config['squares_x'] * pixels_per_square,

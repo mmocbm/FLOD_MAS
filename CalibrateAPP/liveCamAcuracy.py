@@ -27,7 +27,7 @@ SQUARES_Y = CONFIG['board']['squares_y']
 CALIB_FILE = project_path(CONFIG['cameras'][0]['calibration_file'])
 EXTRINSICS_FILE = project_path(CONFIG['cameras'][0]['extrinsics_file'])
 
-OUTPUT_DIR = "results"
+OUTPUT_DIR = project_path("results")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ==========================================

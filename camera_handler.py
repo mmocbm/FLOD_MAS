@@ -4,12 +4,13 @@ import json
 import threading
 import time
 import cv2
-from app_config import CONFIG, ROOT, camera_config
+from app_config import CONFIG, camera_config, project_path
+from pathlib import Path
 from measure.makeUndistored import ImageUndistorter
 
 
-RESOLUTION_CACHE_PATH = ROOT / CONFIG['capture'].get(
-    'resolution_cache_file', 'Files/camera_resolution_cache.json')
+RESOLUTION_CACHE_PATH = Path(project_path(CONFIG['capture'].get(
+    'resolution_cache_file', 'Files/camera_resolution_cache.json')))
 _resolution_cache_lock = threading.Lock()
 
 

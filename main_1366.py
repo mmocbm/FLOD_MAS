@@ -1,3 +1,9 @@
+# Finish settings before importing any modules that cache configuration.
+# Saving starts a fresh dashboard below; no interpreter relaunch is needed.
+if __name__ == '__main__':
+    from startup_settings import run_startup
+    run_startup()
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
@@ -1863,7 +1869,7 @@ class IndustrialDashboard:
             raise RuntimeError(f"Camera {camera_num} could not produce an undistorted frame")
 
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
-        camera_dir = os.path.join("Dataset_capture", f"Camera{camera_num}")
+        camera_dir = project_path(f"Dataset_capture/Camera{camera_num}")
         original_dir = os.path.join(camera_dir, "Original")
         undistorted_dir = os.path.join(camera_dir, "Undistorted")
         crop_dirs = [os.path.join(camera_dir, "Crop1"),
@@ -1997,7 +2003,7 @@ class IndustrialDashboard:
         width_tolerance_mm = getattr(
             self, 'active_strip_width_tolerance',
             float(CONFIG['inspection']['strip_width_tolerance_mm']))
-        detected_dir = os.path.join("Dataset_capture", f"Camera{camera_num}", "Detected")
+        detected_dir = project_path(f"Dataset_capture/Camera{camera_num}/Detected")
         os.makedirs(detected_dir, exist_ok=True)
         self.root.after(0, self.update_progress, 100,
                         f"Camera {camera_num}: detecting objects…")

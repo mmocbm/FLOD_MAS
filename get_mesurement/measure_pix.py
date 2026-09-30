@@ -1,3 +1,10 @@
+
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
 import cv2
 import numpy as np
 from sklearn.decomposition import PCA
@@ -268,8 +275,8 @@ class LinearFeatureInspector:
 # ======================================================
 if __name__ == "__main__":
 
-    image_path = r"get_mesurement\undist_20260211_090340 - Copy.jpg"
-    mask_path = r"get_mesurement\mask_result.png"
+    image_path = str(data_path('get_mesurement/undist_20260211_090340 - Copy.jpg'))
+    mask_path = str(data_path('get_mesurement/mask_result.png'))
 
     original = cv2.imread(image_path)
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
@@ -285,7 +292,7 @@ if __name__ == "__main__":
     result = inspector.inspect(original, mask)
 
     cv2.imshow("Length + Width Inspection", result)
-    cv2.imwrite(r"get_mesurement\result.png", result)
+    cv2.imwrite(str(data_path('get_mesurement/result.png')), result)
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()

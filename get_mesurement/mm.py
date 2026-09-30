@@ -1,3 +1,10 @@
+
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
 import cv2
 import numpy as np
 import json
@@ -633,8 +640,8 @@ if __name__ == "__main__":
     print("LINEAR FEATURE INSPECTOR - OPTIMIZED VERSION")
     print("="*80 + "\n")
 
-    image_path = r"C:\Users\Obhash\Desktop\imges\un_1.jpg"
-    mask_path = r"C:\Users\Obhash\Desktop\imges\mask_1.png"
+    image_path = str(data_path('results/un_1.jpg'))
+    mask_path = str(data_path('results/mask_1.png'))
 
     original = cv2.imread(image_path)
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
@@ -655,8 +662,8 @@ if __name__ == "__main__":
         length_tolerance=0.1,           # nominal tolerance (mm)
         expected_width=3.7,              # mm
         width_tolerance=0.2,              # nominal tolerance (mm)
-        calibration_path=r"C:\Users\Obhash\Desktop\Factory_Day_14\2\Files\camera_calibration_1.json",
-        extrinsics_path=r"C:\Users\Obhash\Desktop\Factory_Day_14\2\Files\camera_extrinsics_1.json",
+        calibration_path=str(data_path('Files/camera_calibration_1.json')),
+        extrinsics_path=str(data_path('Files/camera_extrinsics_1.json')),
         num_segments=5,
         debug=True,
         profile=True,
@@ -668,7 +675,7 @@ if __name__ == "__main__":
     result_inspect = inspector_inspect.inspect(original, mask)
     inspector_inspect.print_profiling_stats()
 
-    output_path = r"C:\Users\Obhash\Desktop\imges\result_calibrated_1.png"
+    output_path = str(data_path('results/result_calibrated_1.png'))
     cv2.imwrite(output_path, result_inspect)
     print(f"\n✓ Result saved to: {output_path}")
 

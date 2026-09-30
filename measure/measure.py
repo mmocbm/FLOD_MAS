@@ -1,3 +1,10 @@
+
+# Allow this helper to run directly from any working directory.
+import sys as _storage_sys
+from pathlib import Path as _StoragePath
+_storage_sys.path.insert(0, str(_StoragePath(__file__).resolve().parent.parent))
+from app_storage import data_path
+
 import cv2
 import numpy as np
 import json
@@ -6,8 +13,8 @@ import json
 class CylinderWidthMeasurer:
     def __init__(
         self,
-        calibration_path="camera_calibration.json",
-        extrinsics_path="camera_extrinsics.json",
+        calibration_path=str(data_path("Files/camera_calibration_0.json")),
+        extrinsics_path=str(data_path("Files/camera_extrinsics_0.json")),
         n_segments=10,
         cut_ratio=1.125,
         box_alpha=0.25
@@ -485,13 +492,13 @@ class CylinderWidthMeasurer:
 if __name__ == "__main__":
     
     # Load undistorted mask and image
-    mask = cv2.imread(r"get_mesurement\undist_20260211_090340 - Copy.jpg", cv2.IMREAD_GRAYSCALE)
-    original = cv2.imread(r"get_mesurement\mask_result.png")
+    mask = cv2.imread(str(data_path('get_mesurement/undist_20260211_090340 - Copy.jpg')), cv2.IMREAD_GRAYSCALE)
+    original = cv2.imread(str(data_path('get_mesurement/mask_result.png')))
 
     # Initialize measurer with calibration files
     measurer = CylinderWidthMeasurer(
-        calibration_path=r"C:\Users\Obhash\Desktop\Factory_Data_Day_4 - 10\Files\camera_calibration_0.json",
-        extrinsics_path=r"C:\Users\Obhash\Desktop\Factory_Data_Day_4 - 10\Files\camera_extrinsics_0.json",
+        calibration_path=str(data_path('Files/camera_calibration_0.json')),
+        extrinsics_path=str(data_path('Files/camera_extrinsics_0.json')),
         n_segments=2,
         cut_ratio=0.02,
         box_alpha=0.25
@@ -512,7 +519,7 @@ if __name__ == "__main__":
         enable_check=True,
         show_deviation=True  # Show deviations (±)
     )
-    cv2.imwrite(r"measure\result_deviation.png", result2)
+    cv2.imwrite(str(data_path('measure/result_deviation.png')), result2)
 
     # Display results
     cv2.imshow("Deviation Values", result2)

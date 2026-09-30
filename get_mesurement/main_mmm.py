@@ -33,7 +33,7 @@ Extrinsics_FILE_1, Extrinsics_FILE_2 = [project_path(c['extrinsics_file']) for c
 MODEL_PATH = r"unet\models\unet_AllAptern_CoveerdMask.h5"
 
 # JSON file with pattern lengths
-PATTERN_JSON_PATH = r"Files\pattern_lengths.json"
+PATTERN_JSON_PATH = project_path("Files/pattern_lengths.json")
 # ---------------------------------------
 
 # Fixed pattern and size lists (replaces CSV dropdown)
@@ -1029,7 +1029,7 @@ def main():
 
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             for subdir, frame in [("Camera1", raw_frame_1), ("Camera2", raw_frame_2)]:
-                folder = os.path.join("Dataset_Capture", subdir)
+                folder = project_path(f"Dataset_capture/{subdir}")
                 os.makedirs(folder, exist_ok=True)
                 cv2.imwrite(os.path.join(folder, f"raw_{ts}.jpg"), frame)
 
@@ -1046,7 +1046,7 @@ def main():
 
             for subdir, undist, mask in [("Camera1", undist_frame_1, mask_uint8_1), 
                                          ("Camera2", undist_frame_2, mask_uint8_2)]:
-                folder = os.path.join("Dataset_Capture", subdir)
+                folder = project_path(f"Dataset_capture/{subdir}")
                 cv2.imwrite(os.path.join(folder, f"undist_{ts}.jpg"), undist)
                 cv2.imwrite(os.path.join(folder, f"mask_{ts}.jpg"), mask)
             print(f"Saved dataset for timestamp: {ts}")

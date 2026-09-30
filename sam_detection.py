@@ -273,7 +273,10 @@ def _write_temp_jpeg(image: np.ndarray, quality: int) -> tuple[Path, int]:
     re-open a file that is still held open.
     """
     payload = encode_jpeg(image, quality)
-    handle = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    from app_storage import data_path
+    upload_dir = data_path('temp_uploads')
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir=upload_dir)
     try:
         handle.write(payload)
     finally:

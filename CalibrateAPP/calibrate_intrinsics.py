@@ -21,8 +21,8 @@ SQUARES_X = CONFIG['board']['squares_x']
 SQUARES_Y = CONFIG['board']['squares_y']
 
 # Paths
-CALIB_IMAGES_FOLDER = "temp_calibration_images"  # Folder with calibration images
-OUTPUT_FILE = "camera_calibration.json"
+CALIB_IMAGES_FOLDER = project_path("temp_calibration_images")  # Folder with calibration images
+OUTPUT_FILE = project_path(CONFIG["cameras"][0]["calibration_file"])
 
 def calibrate_camera():
     """Run intrinsic calibration"""
