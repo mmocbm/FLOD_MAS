@@ -19,7 +19,7 @@ import datetime
 import sys
 import math
 from concurrent.futures import ThreadPoolExecutor
-from app_config import CONFIG, project_path
+from app_config import CONFIG, ACTIVE_CAMERAS, CAMERA_COUNT, project_path
 import plane_scale
 import region_calibration
 import sam_detection
@@ -53,8 +53,10 @@ SERIAL_PORT = CONFIG['serial']['port']
 BAUD_RATE = CONFIG['serial']['baud_rate']
 
 # Camera configuration
-CAMERA_INDEX_1, CAMERA_INDEX_2 = [c['index'] for c in CONFIG['cameras']]
-CALIB_FILE_1, CALIB_FILE_2 = [project_path(c['calibration_file']) for c in CONFIG['cameras']]
+CAMERA_INDEX_1 = ACTIVE_CAMERAS[0]['index']
+CAMERA_INDEX_2 = ACTIVE_CAMERAS[1]['index'] if CAMERA_COUNT == 2 else None
+CALIB_FILE_1 = project_path(ACTIVE_CAMERAS[0]['calibration_file'])
+CALIB_FILE_2 = project_path(ACTIVE_CAMERAS[1]['calibration_file']) if CAMERA_COUNT == 2 else None
 CROP_DEFINITIONS_FILE = project_path(CONFIG['crop_setup']['definitions_file'])
 CROP_RATIO = CONFIG['crop_setup']['aspect_ratio'][0] / CONFIG['crop_setup']['aspect_ratio'][1]
 CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
@@ -221,6 +223,9 @@ class IndustrialDashboard:
             print(f"Serial write error ({message}): {error}")
 
     def _handle_serial_button(self, side):
+        if side not in ('L', 'R') or (side == 'R' and CAMERA_COUNT == 1):
+            self._send_serial_status(f'{side}_NOT_READY')
+            return
         if getattr(self, 'inspection_busy', False):
             if (getattr(self, '_result_timer_active', False)
                     and side == getattr(self, '_active_inspection_side', None)):
@@ -232,7 +237,7 @@ class IndustrialDashboard:
             return
         camera = self.camera1 if side == "L" else self.camera2
         if (camera is None or not getattr(camera, 'calibration_available', False)
-                or self.camera1 is None or self.camera2 is None
+                or self.camera1 is None or (CAMERA_COUNT == 2 and self.camera2 is None)
                 or getattr(self, 'calibration_page', None) is not None):
             self._send_serial_status(f"{side}_NOT_READY")
             return
@@ -398,6 +403,9 @@ class IndustrialDashboard:
             role="blue", width=13, pady=15,
         )
         self.detect_btn_R.pack(side=tk.LEFT, padx=4)
+        if CAMERA_COUNT == 1:
+            self.detect_btn_R.pack_forget()
+            self.detect_btn_L.configure(text='INSPECT')
 
     # ==============================================================
     # settings windows
@@ -839,7 +847,7 @@ class IndustrialDashboard:
                  fg=C["text_soft"], bg=C["card"], font=(FONT, 9)).pack(anchor="w")
 
         self.crop_camera_buttons = {}
-        for camera in (1, 2):
+        for camera in range(1, CAMERA_COUNT + 1):
             button = themed_button(
                 controls, f"CAMERA {camera}",
                 lambda value=camera: self._select_crop_camera(value),
@@ -919,6 +927,8 @@ class IndustrialDashboard:
         )
 
     def _select_crop_camera(self, camera):
+        if camera not in range(1, CAMERA_COUNT + 1):
+            return
         self.crop_selected_camera = camera
         self.crop_frozen = False
         self.crop_live_frame = None
@@ -1294,7 +1304,7 @@ class IndustrialDashboard:
         left_header.pack(fill=tk.X, padx=14, pady=(5, 0))
         left_header.pack_propagate(False)
         status_dot(left_header).pack(side=tk.LEFT, pady=14, padx=(0, 7))
-        tk.Label(left_header, text="LEFT CAMERA", bg=C["surface"], fg=C["text_soft"],
+        tk.Label(left_header, text="CAMERA" if CAMERA_COUNT == 1 else "LEFT CAMERA", bg=C["surface"], fg=C["text_soft"],
                  font=(FONT, 9, "bold")).pack(side=tk.LEFT, pady=9)
         tk.Label(left_header, text="LIVE", bg=C["surface"], fg=C["accent"],
                  font=(FONT, 8, "bold")).pack(side=tk.RIGHT, pady=10)
@@ -1316,6 +1326,9 @@ class IndustrialDashboard:
 
         self.canvas_2 = tk.Canvas(self.right_frame, bg=C["camera"], highlightthickness=0)
         self.canvas_2.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 12))
+        if CAMERA_COUNT == 1:
+            self.right_frame.pack_forget()
+            self.left_frame.pack_configure(padx=0)
 
         # ---- progress bar ----
         self.loading_container = tk.Frame(self.image_panel, bg=C["bg"], height=24)
@@ -1347,6 +1360,8 @@ class IndustrialDashboard:
     # --------------------------------------------------------------
     def maximize_camera(self, camera_num):
         """Show the selected camera in the center of the container."""
+        if CAMERA_COUNT == 1:
+            return
         if self.maximized_camera is not None:
             return  # already maximized
         self.maximized_camera = camera_num
@@ -1373,7 +1388,8 @@ class IndustrialDashboard:
             self.right_frame.place_forget()
         # Re-pack both frames with original options
         self.left_frame.pack(**self.left_frame_pack_opts)
-        self.right_frame.pack(**self.right_frame_pack_opts)
+        if CAMERA_COUNT == 2:
+            self.right_frame.pack(**self.right_frame_pack_opts)
         self.maximized_camera = None
         self.root.update_idletasks()
 
@@ -1391,7 +1407,7 @@ class IndustrialDashboard:
             and getattr(self.camera1, 'calibration_available', False)
         )
         right_ready = bool(
-            self.camera2 is not None
+            CAMERA_COUNT == 2 and self.camera2 is not None
             and getattr(self.camera2, 'calibration_available', False)
         )
         self.detect_btn_L.config(state=tk.NORMAL if left_ready else tk.DISABLED)
@@ -1400,7 +1416,7 @@ class IndustrialDashboard:
         missing = []
         if not left_ready:
             missing.append("left")
-        if not right_ready:
+        if CAMERA_COUNT == 2 and not right_ready:
             missing.append("right")
         if missing:
             camera_text = " and ".join(missing)
@@ -1414,7 +1430,7 @@ class IndustrialDashboard:
             self.update_progress(100, "Live Feed")
 
     def start_video_stream(self):
-        if self.camera1 is not None and self.camera2 is not None:
+        if self.camera1 is not None and (CAMERA_COUNT == 1 or self.camera2 is not None):
             # Resume must not create a second independently scheduled feed loop.
             if getattr(self, '_video_job', None) is not None:
                 self.root.after_cancel(self._video_job)
@@ -1429,9 +1445,9 @@ class IndustrialDashboard:
         self._camera_starting = True
         self.update_progress(0, "Starting cameras…")
         self.set_pass_fail("STARTING")
-        executor = ThreadPoolExecutor(max_workers=2)
-        futures = [executor.submit(CameraHandler, index, path) for index, path in
-                   ((CAMERA_INDEX_1, CALIB_FILE_1), (CAMERA_INDEX_2, CALIB_FILE_2))]
+        executor = ThreadPoolExecutor(max_workers=CAMERA_COUNT)
+        futures = [executor.submit(CameraHandler, spec['index'], project_path(spec['calibration_file']))
+                   for spec in ACTIVE_CAMERAS]
         self._camera_futures = futures
         executor.shutdown(wait=False)
 
@@ -1452,7 +1468,8 @@ class IndustrialDashboard:
                     self.set_pass_fail("CAMERA ERROR")
                     self.update_progress(0, " | ".join(errors))
                 return
-            self.camera1, self.camera2 = cameras
+            self.camera1 = cameras[0]
+            self.camera2 = cameras[1] if CAMERA_COUNT == 2 else None
             if getattr(self, 'calibration_page', None) is None:
                 self.start_video_stream()
         self.root.after(50, finish)
@@ -1474,9 +1491,9 @@ class IndustrialDashboard:
                     else self.maximized_camera)
         frozen = getattr(self, 'crop_setup_active', False) and self.crop_frozen
         ret1, raw1 = (self.camera1.get_raw_frame_with_ret()
-                      if selected in (None, 1) and not frozen else (False, None))
+                      if self.camera1 is not None and selected in (None, 1) and not frozen else (False, None))
         ret2, raw2 = (self.camera2.get_raw_frame_with_ret()
-                      if selected in (None, 2) and not frozen else (False, None))
+                      if self.camera2 is not None and selected in (None, 2) and not frozen else (False, None))
 
         if getattr(self, "crop_setup_active", False):
             if not self.crop_frozen:
@@ -1789,11 +1806,13 @@ class IndustrialDashboard:
     # detection trigger – with maximize & highlight
     # ==============================================================
     def start_detect_thread(self, side):
+        if side not in ('L', 'R') or (side == 'R' and CAMERA_COUNT == 1):
+            return False
         if getattr(self, 'inspection_busy', False):
             return False
         if getattr(self, 'calibration_page', None) is not None:
             return False
-        if self.camera1 is None or self.camera2 is None:
+        if self.camera1 is None or (CAMERA_COUNT == 2 and self.camera2 is None):
             return False
         button = self.detect_btn_L if side == "L" else self.detect_btn_R
         camera = self.camera1 if side == "L" else self.camera2

@@ -24,14 +24,14 @@ class StartupBootstrapTests(unittest.TestCase):
             with self.subTest(saved=saved), tempfile.TemporaryDirectory() as directory:
                 directory = Path(directory)
                 config_path = directory / 'config.json'
-                config_path.write_text(json.dumps({'performance': {'opencv_threads': 1}}))
+                config_path.write_text(json.dumps({'cameras': [{'index': 0}], 'performance': {'opencv_threads': 1}}))
                 validator = types.ModuleType('config_validation')
                 validator.validate_config = lambda config: None
                 cv = types.ModuleType('cv2')
                 cv.setNumThreads = lambda count: None
                 def startup():
                     if saved:
-                        startup_settings.save_config({'performance': {'opencv_threads': 2}}, config_path)
+                        startup_settings.save_config({'cameras': [{'index': 0}], 'performance': {'opencv_threads': 2}}, config_path)
                     return saved
                 with patch.dict(sys.modules, {'config_validation': validator, 'cv2': cv}), \
                      patch('app_storage.initialize_storage'), \

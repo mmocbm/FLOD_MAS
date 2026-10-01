@@ -9,9 +9,14 @@ def validate_config(CONFIG):
             or opencv_threads < 1):
         raise ValueError("Performance opencv_threads must be a positive integer")
     # Thread configuration is applied only by the running application.
-    if len(CONFIG["cameras"]) != 2:
-        raise ValueError("config.json must specify two cameras")
-    if len({c["index"] for c in CONFIG["cameras"]}) != 2:
+    cameras = CONFIG['cameras']
+    if not isinstance(cameras, list) or len(cameras) not in (1, 2):
+        raise ValueError('config.json must define one or two camera configurations')
+    camera_count = CONFIG.get('camera_count', len(cameras))
+    if (isinstance(camera_count, bool) or not isinstance(camera_count, int)
+            or camera_count not in (1, 2) or camera_count > len(cameras)):
+        raise ValueError('camera_count must be 1 or 2, with enough camera configurations')
+    if len({c["index"] for c in cameras}) != len(cameras):
         raise ValueError("Camera indexes must be different")
     for camera in CONFIG["cameras"]:
         if camera['index'] < 0 or len(camera['fourcc']) not in (0, 4):
@@ -123,9 +128,11 @@ def validate_config(CONFIG):
     if not isinstance(sam.get('enabled'), bool):
         raise ValueError("SAM detection enabled must be true or false")
     send_crops = sam.get('send_crops')
-    if not isinstance(send_crops, dict) or set(send_crops) != {"1", "2"}:
-        raise ValueError("SAM detection send_crops must define cameras '1' and '2'")
-    for camera in ("1", "2"):
+    required_cameras = {str(i + 1) for i in range(camera_count)}
+    if (not isinstance(send_crops, dict) or not required_cameras.issubset(send_crops)
+            or not set(send_crops).issubset({'1', '2'})):
+        raise ValueError('SAM detection send_crops must define each active camera')
+    for camera in send_crops:
         flags = send_crops[camera]
         if (not isinstance(flags, list) or len(flags) != 2
                 or not all(isinstance(flag, bool) for flag in flags)):

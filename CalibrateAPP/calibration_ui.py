@@ -11,7 +11,7 @@ import sys
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app_config import CONFIG, DATA_ROOT, camera_config, project_path
+from app_config import CONFIG, ACTIVE_CAMERAS, DATA_ROOT, camera_config, project_path
 from camera_handler import CameraStream
 from CalibrateAPP.calibration_store import replace_calibration_files
 # The optional per-region homography mode. Imported at module level like the other
@@ -79,7 +79,7 @@ MAX_EXTRINSIC_RMS_PX = CONFIG['calibration']['surface_maximum_rms_px']
 MAX_VERIFICATION_RMS_PX = CONFIG['calibration']['verification_max_rms_px']
 COVERAGE_ROWS = CONFIG['calibration']['coverage_grid_rows']
 COVERAGE_COLUMNS = CONFIG['calibration']['coverage_grid_columns']
-CAMERA_IDS = [c['index'] for c in CONFIG['cameras']]
+CAMERA_IDS = [c['index'] for c in ACTIVE_CAMERAS]
 SURFACE_SETUP_ENABLED = CONFIG['measurement_surface']['enabled']
 TWO_BOARD_DEFAULT = CONFIG['two_board']['enabled']
 CROP_RATIO = (float(CONFIG['crop_setup']['aspect_ratio'][0])
@@ -307,8 +307,10 @@ class CalibrationApp:
         cam_buttons.pack(fill=tk.X, pady=6)
         self.btn_cam0 = self._button(cam_buttons, f"CAMERA {CAMERA_IDS[0]}", lambda: self.select_camera(CAMERA_IDS[0]), GREEN, 13)
         self.btn_cam0.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        self.btn_cam1 = self._button(cam_buttons, f"CAMERA {CAMERA_IDS[1]}", lambda: self.select_camera(CAMERA_IDS[1]), BLUE, 13)
-        self.btn_cam1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+        self.btn_cam1 = None
+        if len(CAMERA_IDS) > 1:
+            self.btn_cam1 = self._button(cam_buttons, f"CAMERA {CAMERA_IDS[1]}", lambda: self.select_camera(CAMERA_IDS[1]), BLUE, 13)
+            self.btn_cam1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
         stream_buttons = tk.Frame(camera_box, bg=PANEL)
         stream_buttons.pack(fill=tk.X, pady=(0, 12))
         self.start_btn = self._button(stream_buttons, "START CAMERA", self.start_camera, GREEN, 15, tk.DISABLED)
@@ -700,7 +702,8 @@ class CalibrationApp:
         )
         self.progress["value"] = 0
         set_button_role(self.btn_cam0, "selected" if index == CAMERA_IDS[0] else "secondary")
-        set_button_role(self.btn_cam1, "selected" if index == CAMERA_IDS[1] else "secondary")
+        if self.btn_cam1 is not None:
+            set_button_role(self.btn_cam1, "selected" if index == CAMERA_IDS[1] else "secondary")
         self.start_btn.configure(state=tk.NORMAL)
         self._set_status(f"Camera {index} selected — start the live feed")
         self.log(f"Selected Camera {index}")
@@ -2155,11 +2158,13 @@ class CalibrationCheckApp(CalibrationApp):
             lambda: self.select_camera(CAMERA_IDS[0]), GREEN, 13,
         )
         self.btn_cam0.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        self.btn_cam1 = self._button(
-            camera_row, f"CAMERA {CAMERA_IDS[1]}",
-            lambda: self.select_camera(CAMERA_IDS[1]), BLUE, 13,
-        )
-        self.btn_cam1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+        self.btn_cam1 = None
+        if len(CAMERA_IDS) > 1:
+            self.btn_cam1 = self._button(
+                camera_row, f"CAMERA {CAMERA_IDS[1]}",
+                lambda: self.select_camera(CAMERA_IDS[1]), BLUE, 13,
+            )
+            self.btn_cam1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
         stream_row = tk.Frame(camera_box, bg=PANEL)
         stream_row.pack(fill=tk.X, pady=(0, 7))
         self.start_btn = self._button(
@@ -2489,7 +2494,8 @@ class CalibrationCheckApp(CalibrationApp):
         self.dist_coeffs = None
         self.calibration_image_size = None
         set_button_role(self.btn_cam0, "selected" if index == CAMERA_IDS[0] else "secondary")
-        set_button_role(self.btn_cam1, "selected" if index == CAMERA_IDS[1] else "secondary")
+        if self.btn_cam1 is not None:
+            set_button_role(self.btn_cam1, "selected" if index == CAMERA_IDS[1] else "secondary")
         self._set_status(f"Camera {index} selected — start the live feed")
         self.log(f"Selected Camera {index} for calibration checks")
         self._refresh_stage_ui()

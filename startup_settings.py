@@ -135,9 +135,15 @@ class StartupWindow:
                 self.add_fields(form, child, path + (index,), labels + [str(index + 1)])
         else:
             row = len(form.grid_slaves(column=0))
-            ttk.Label(form, text=' / '.join(labels) or path[0]).grid(row=row, column=0, sticky='w', padx=(0, 18), pady=5)
+            label = 'Number of cameras' if path == ('camera_count',) else ' / '.join(labels) or path[0]
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky='w', padx=(0, 18), pady=5)
             variable = tk.BooleanVar(value=value) if isinstance(value, bool) else tk.StringVar(value=str(value))
-            control = ttk.Checkbutton(form, variable=variable) if isinstance(value, bool) else ttk.Entry(form, textvariable=variable)
+            if path == ('camera_count',):
+                control = ttk.Combobox(form, textvariable=variable, values=('1', '2'), state='readonly')
+            elif isinstance(value, bool):
+                control = ttk.Checkbutton(form, variable=variable)
+            else:
+                control = ttk.Entry(form, textvariable=variable)
             control.grid(row=row, column=1, sticky='ew', pady=5)
             self.fields.append((path, value, variable))
 

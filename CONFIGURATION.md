@@ -40,6 +40,18 @@ prevents repeated migration during normal startup.
 
 ## Cameras
 
+`camera_count` selects **1** or **2** active cameras. Change it in the startup
+settings window's **Camera Count** tab, then save and restart. With **1**, only the
+first entry in `cameras` is opened: it fills the dashboard, has one **INSPECT**
+button, and appears alone in crop setup and all calibration pages. The second
+camera's configuration and saved data are retained for switching back to **2**.
+Set the first entry's `index` to the physical camera you want to use.
+
+Both modes use exactly two crops per active camera, with the same detection,
+measurement, results, and Documents/data files storage. In one-camera mode the
+ESP32's LeftCheck button triggers inspection; RightCheck responds NOT_READY.
+Existing configurations without `camera_count` use all defined cameras.
+
 The first camera is the dashboard's left view; the second is the right view.
 For each camera, set `index`, `width`, `height`, and `fps` to a mode supported by
 your camera. Defaults are 4608 × 3456 at a requested 10 FPS to reduce continuous

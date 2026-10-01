@@ -36,7 +36,7 @@ from tkinter import messagebox, ttk
 import cv2
 import numpy as np
 
-from app_config import CONFIG, project_path
+from app_config import CONFIG, ACTIVE_CAMERAS, project_path
 from crop_processing import crop_cameras_for_size, extract_rotated_crop, load_crop_store
 from measure.makeUndistored import ImageUndistorter
 import plane_scale
@@ -68,7 +68,7 @@ CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
 REGION_SETTINGS = CONFIG.get('region_homography', {})
 
 REGION_NAMES = {1: "REGION 01", 2: "REGION 02"}
-CAMERA_IDS = [camera['index'] for camera in CONFIG['cameras']]
+CAMERA_IDS = [camera['index'] for camera in ACTIVE_CAMERAS]
 
 # Every dictionary OpenCV exposes, so a board bought later can be typed in rather than
 # waiting for a code change.
@@ -354,10 +354,12 @@ class RegionCalibrationApp(CalibrationApp):
             cam_buttons, f"CAMERA {CAMERA_IDS[0]}",
             lambda: self.select_camera(CAMERA_IDS[0]), GREEN, 13)
         self.btn_cam0.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        self.btn_cam1 = self._button(
-            cam_buttons, f"CAMERA {CAMERA_IDS[1]}",
-            lambda: self.select_camera(CAMERA_IDS[1]), BLUE, 13)
-        self.btn_cam1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+        self.btn_cam1 = None
+        if len(CAMERA_IDS) > 1:
+            self.btn_cam1 = self._button(
+                cam_buttons, f"CAMERA {CAMERA_IDS[1]}",
+                lambda: self.select_camera(CAMERA_IDS[1]), BLUE, 13)
+            self.btn_cam1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
         actions = tk.Frame(parent, bg=PANEL)
         actions.pack(fill=tk.X, padx=12, pady=(0, 8))
         self.start_btn = self._button(actions, "START CAMERA", self.start_camera,
@@ -923,8 +925,9 @@ class RegionCalibrationApp(CalibrationApp):
         self.region_status = {1: None, 2: None}
         set_button_role(self.btn_cam0,
                         "selected" if index == CAMERA_IDS[0] else "secondary")
-        set_button_role(self.btn_cam1,
-                        "selected" if index == CAMERA_IDS[1] else "secondary")
+        if self.btn_cam1 is not None:
+            set_button_role(self.btn_cam1,
+                            "selected" if index == CAMERA_IDS[1] else "secondary")
         self.start_btn.configure(state=tk.NORMAL, text="START CAMERA")
         self._set_status(f"Camera {index} selected — start the live feed")
         self.log(f"Selected Camera {index}")

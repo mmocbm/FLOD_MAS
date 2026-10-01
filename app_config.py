@@ -9,6 +9,8 @@ CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 from config_validation import validate_config
 
 validate_config(CONFIG)
+CAMERA_COUNT = CONFIG.get('camera_count', len(CONFIG['cameras']))
+ACTIVE_CAMERAS = CONFIG['cameras'][:CAMERA_COUNT]
 cv2.setNumThreads(CONFIG.get('performance', {}).get('opencv_threads', 1))
 initialize_storage()
 
