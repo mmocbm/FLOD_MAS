@@ -7,10 +7,13 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Instance:
-    polygon: np.ndarray  # N x 2 float coordinates in the ORIGINAL input frame
+    # N x 2 float coordinates in the ORIGINAL input frame. None marks a matched
+    # panel in which no strip was found; such an instance must carry panel_box.
+    polygon: np.ndarray | None
     confidence: float = 1.0
     label: str = "glue strip"
     panel_box: tuple | None = None  # x1, y1, x2, y2 in original frame
+    note: str | None = None  # e.g. 'fragmented'; None for an ordinary strip
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,10 @@ def validate_result(result, frame):
     if result.frame_size != (w, h):
         raise ValueError('Segmentation must return coordinates in the input frame')
     for instance in result.instances:
+        if instance.polygon is None:
+            if instance.panel_box is None:
+                raise ValueError('A fabric without a strip needs its panel box')
+            continue
         ring = np.asarray(instance.polygon)
         if (ring.ndim != 2 or ring.shape[1] != 2 or len(ring) < 3
                 or not np.isfinite(ring).all()

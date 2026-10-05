@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import grey_closing, median_filter, uniform_filter1d
 from skimage.morphology import skeletonize
 
 # The 8-neighbourhood used to walk the skeleton pixel by pixel.
@@ -31,6 +31,14 @@ RAY_SKEW_RAD = 0.10            # extra angles tried either side of the normal (~
 MAX_CENTERLINE_SAMPLES = 500   # resampling density; also bounds ray-marching cost
 SMOOTH_FRACTION = 0.02         # smoothing window, as a fraction of the centreline
 END_MARGIN_FRACTION = 0.5      # end trimmed from the path, in units of strip width
+
+# Edge refinement (refine_widths). A glue bead's edges show as thin dark lines
+# even where the bead is the same colour as the fabric; these bound what counts
+# as one of those lines.
+REFINE_BLUR_SIGMA = 1.0        # pixel noise suppression before reading profiles
+REFINE_LINE_SPAN_PX = 13       # widest dark line treated as an edge, across the strip
+REFINE_MIN_DEPTH = 1.5         # gray levels a line must dip below its surroundings
+REFINE_OUTLIER_WINDOW = 9      # samples; rejects a lone edge that jumped to a fold
 
 CENTERLINE_COLOR = (0, 255, 255)  # BGR
 CENTERLINE_HALO = (0, 0, 0)
@@ -83,6 +91,9 @@ class StripAnalysis:
     average_width_mm: float | None = None
     target_width_mm: float | None = None
     width_tolerance_mm: float | None = None
+    # Share of centreline samples whose two edges were both located in the
+    # image by refine_widths; None when the widths are the polygon's own.
+    refined_fraction: float | None = None
 
     @property
     def minimum_width_px(self) -> float:
@@ -406,6 +417,128 @@ def analyze_ring(ring: np.ndarray, image_shape: tuple[int, ...],
         edge_indices=[int(edge) for edge in edges],
         total_length_px=total_length,
         average_width_px=float(widths.mean()),
+    )
+
+
+# --- edge refinement ---------------------------------------------------------
+
+
+def _trough(offsets: np.ndarray, depth: np.ndarray, index: np.ndarray) -> np.ndarray:
+    """Sub-pixel position of each trough: the vertex of the parabola through it and
+    the samples either side.
+
+    A dark edge line a few pixels wide rarely has its darkest point on a pixel
+    centre, so taking the deepest whole pixel alone reports every width as a whole
+    number of pixels and a 28.4 px strip reads as 28 or 29 depending on where the
+    fabric happens to fall. The fit is clamped to half a pixel either side of the
+    pixel it started from, so noise can never walk an edge off the line that was
+    found, and a trough that is not a real minimum is left on its own pixel.
+    """
+    rows = np.arange(depth.shape[0])
+    left = np.clip(index - 1, 0, depth.shape[1] - 1)
+    right = np.clip(index + 1, 0, depth.shape[1] - 1)
+    y0, y1, y2 = depth[rows, left], depth[rows, index], depth[rows, right]
+    curvature = y0 - 2.0 * y1 + y2          # negative only where y1 is a minimum
+    usable = (depth.shape[1] > 2) & (curvature < -1e-9)
+    shift = np.zeros(len(index), np.float64)
+    shift[usable] = np.clip(0.5 * (y0[usable] - y2[usable]) / curvature[usable], -0.5, 0.5)
+    return offsets[index] + shift
+
+
+def refine_widths(gray: np.ndarray, analysis: StripAnalysis,
+                  search_px: float = 10.0) -> StripAnalysis:
+    """Move each strip edge from the polygon onto the edge line visible in the image.
+
+    The polygon is predicted on a downscaled frame, so each of its edges can sit
+    several full-resolution pixels from the real one -- more than the tolerance
+    on a narrow strip. A glue bead on fabric of its own colour has no brightness
+    step to find, but each of its edges still shows as a thin dark line. This
+    reads the brightness profile across the strip at every centreline sample and,
+    within ``search_px`` of where the polygon put each edge, takes the deepest
+    such line as the edge.
+
+    Glare is clipped first, so a highlight on the bead is never taken for an
+    edge. An edge is moved only when a line is actually there; otherwise the
+    polygon's edge is kept, so a strip with no edge lines -- a plain brightness
+    step, or nothing at all -- comes back with its original widths.
+    ``refined_fraction`` on the result says how much of the strip was relocated.
+    """
+    gray = np.asarray(gray)
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    points, normals = analysis.centerline, analysis.normals
+    half = analysis.widths / 2.0
+    if len(points) < 2 or search_px <= 0:
+        return analysis
+
+    # Profiles: one row per centreline sample, one column per pixel of offset
+    # along that sample's normal.
+    reach = int(np.ceil(float(half.max()) + search_px)) + REFINE_LINE_SPAN_PX
+    offsets = np.arange(-reach, reach + 1, dtype=np.float64)
+    blurred = cv2.GaussianBlur(gray.astype(np.float32), (0, 0), REFINE_BLUR_SIGMA)
+    profiles = cv2.remap(
+        blurred,
+        (points[:, 0:1] + normals[:, 0:1] * offsets).astype(np.float32),
+        (points[:, 1:2] + normals[:, 1:2] * offsets).astype(np.float32),
+        cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    # An edge runs along the strip, so neighbouring profiles agree about it and
+    # averaging about one strip-width of them lifts it out of the noise.
+    spacing = analysis.total_length_px / max(len(points) - 1, 1)
+    along = int(np.clip(round(float(half.mean()) * 2.0 / max(spacing, 1e-6)), 3, 15)) | 1
+    profiles = uniform_filter1d(profiles, along, axis=0, mode="nearest")
+    profiles = np.minimum(profiles, np.median(profiles, axis=1, keepdims=True))
+    # How far each pixel dips below a profile with its narrow dark lines filled in.
+    depth = grey_closing(profiles, size=(1, REFINE_LINE_SPAN_PX)) - profiles
+
+    rows = np.arange(len(points))
+    distances, located = [], []
+    for side in (-1.0, 1.0):
+        # Stay on this edge's own side of the centreline and near the polygon edge.
+        window = ((np.abs(offsets[None, :] - side * half[:, None]) <= search_px)
+                  & (side * offsets[None, :] >= 1.0))
+        candidates = np.where(window, depth, -1.0)
+        best = candidates.argmax(axis=1)
+        found = candidates[rows, best] >= REFINE_MIN_DEPTH
+        # Each edge sits between pixels, so read its trough to a fraction of one.
+        distance = np.abs(_trough(offsets, depth, best))
+        # A single sample that latched onto a fold or a neighbouring edge is
+        # pulled back to what its neighbours found.
+        distance = np.where(found, median_filter(
+            np.where(found, distance, half), REFINE_OUTLIER_WINDOW, mode="nearest"), half)
+        distances.append(distance)
+        located.append(found)
+
+    refined_fraction = float(np.mean(located[0] & located[1]))
+    if not (located[0].any() or located[1].any()):
+        return replace(analysis, refined_fraction=0.0)
+
+    widths = distances[0] + distances[1]
+    # The two edges no longer sit symmetrically about the old centreline, and the
+    # millimetre conversion assumes they do, so the centreline moves to their middle.
+    shift = uniform_filter1d((distances[1] - distances[0]) / 2.0, along, mode="nearest")
+    centerline = points + normals * shift[:, None]
+
+    segments = []
+    for segment in analysis.segments:
+        low, high = segment.first_sample, segment.last_sample
+        chunk = widths[low:high]
+        middle = (low + high) // 2
+        segments.append(replace(
+            segment,
+            average_width_px=float(chunk.mean()),
+            minimum_width_px=float(chunk.min()),
+            maximum_width_px=float(chunk.max()),
+            midpoint=(float(centerline[middle, 0]), float(centerline[middle, 1])),
+            start=(float(centerline[low, 0]), float(centerline[low, 1])),
+            end=(float(centerline[high - 1, 0]), float(centerline[high - 1, 1])),
+        ))
+    return replace(
+        analysis,
+        centerline=centerline,
+        widths=widths,
+        segments=segments,
+        average_width_px=float(widths.mean()),
+        refined_fraction=refined_fraction,
     )
 
 

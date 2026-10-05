@@ -33,6 +33,7 @@ def validate_automatic_config(config):
     provider = config['segmentation']['provider']
     if not isinstance(provider, str) or (provider != 'workflow' and ':' not in provider):
         raise ValueError('segmentation.provider must be workflow or module:Factory')
+    _validate_white_fabric_options(config)
     number('capture_storage', 'max_sets', 1, integer=True)
     number('capture_storage', 'jpeg_quality', 1, 100, integer=True)
     number('capture_storage', 'preview_max_edge', 64, integer=True)
@@ -45,6 +46,61 @@ def validate_automatic_config(config):
     if (not isinstance(directory, str) or not directory.strip() or
             PureWindowsPath(directory).is_absolute() or '..' in PureWindowsPath(directory).parts):
         raise ValueError('capture_storage.directory must be a relative data directory')
+
+
+def _is_number(value):
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(value))
+
+
+def _validate_white_fabric_options(config):
+    """Optional low-contrast settings. Absent keys keep the original behaviour."""
+    segmentation = config['segmentation']
+    confidence = segmentation.get('min_confidence', 0.0)
+    if not _is_number(confidence) or not 0 <= confidence <= 1:
+        raise ValueError('segmentation.min_confidence must be a number from 0 to 1')
+    for key in ('report_missing_strips', 'save_input'):
+        if not isinstance(segmentation.get(key, False), bool):
+            raise ValueError(f'segmentation.{key} must be true or false')
+    if segmentation.get('fragment_policy', 'error') not in ('error', 'largest'):
+        raise ValueError('segmentation.fragment_policy must be error or largest')
+    roi = segmentation.get('roi', [0.0, 0.0, 1.0, 1.0])
+    if (not isinstance(roi, list) or len(roi) != 4 or not all(_is_number(v) for v in roi)
+            or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1)):
+        raise ValueError('segmentation.roi must be [x1, y1, x2, y2] as fractions of the '
+                         'frame, with x1 < x2 and y1 < y2')
+    enhance = segmentation.get('enhance', {})
+    if not isinstance(enhance, dict) or not isinstance(enhance.get('enabled', False), bool):
+        raise ValueError('segmentation.enhance.enabled must be true or false')
+    clip_limit = enhance.get('clip_limit', 2.0)
+    if not _is_number(clip_limit) or clip_limit <= 0:
+        raise ValueError('segmentation.enhance.clip_limit must be a positive number')
+    tile_grid = enhance.get('tile_grid', 8)
+    if isinstance(tile_grid, bool) or not isinstance(tile_grid, int) or not 1 <= tile_grid <= 64:
+        raise ValueError('segmentation.enhance.tile_grid must be a whole number from 1 to 64')
+    glue_line = segmentation.get('glue_line', {})
+    if not isinstance(glue_line, dict):
+        raise ValueError('segmentation.glue_line must be an object')
+    for key, value in glue_line.items():
+        if key == 'track_gaps':
+            if not isinstance(value, bool):
+                raise ValueError('segmentation.glue_line.track_gaps must be true or false')
+            continue
+        if not _is_number(value) or value <= 0:
+            raise ValueError(f'segmentation.glue_line.{key} must be a positive number')
+    if not 0 < glue_line.get('working_scale', 1.0) <= 1:
+        raise ValueError('segmentation.glue_line.working_scale must be above 0 and at most 1')
+    for key in ('min_gloss_share', 'min_seen_share'):
+        if glue_line.get(key, 0.5) > 1:
+            raise ValueError(f'segmentation.glue_line.{key} must be at most 1')
+    if glue_line.get('min_width_px', 8.0) >= glue_line.get('max_width_px', 34.0):
+        raise ValueError('segmentation.glue_line.min_width_px must be below max_width_px')
+    strip = config.get('sam_detection', {})
+    if not isinstance(strip.get('refine_edges', False), bool):
+        raise ValueError('sam_detection.refine_edges must be true or false')
+    search = strip.get('refine_search_px', 10.0)
+    if not _is_number(search) or search <= 0:
+        raise ValueError('sam_detection.refine_search_px must be a positive number')
 
 
 def validate_config(CONFIG):
@@ -106,6 +162,12 @@ def validate_config(CONFIG):
     board = CONFIG["board"]
     if not isinstance(CONFIG['capture'].get('use_dshow'), bool):
         raise ValueError("Capture use_dshow must be true or false")
+    controls = CONFIG['capture'].get('controls', {})
+    if not isinstance(controls, dict) or not isinstance(controls.get('enabled', False), bool):
+        raise ValueError("Capture controls enabled must be true or false")
+    for key, value in controls.items():
+        if key != 'enabled' and not _is_number(value):
+            raise ValueError(f"Capture controls {key} must be a number")
     thickness = CONFIG['measurement_surface'].get('board_thickness', {})
     if not isinstance(thickness.get('enabled'), bool):
         raise ValueError("Measurement board thickness enabled must be true or false")

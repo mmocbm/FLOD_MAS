@@ -9,6 +9,7 @@ is a property of the test fixture, not of the measurement.
 import unittest
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 import sam_detection
@@ -400,6 +401,161 @@ class DrawAnalysisTests(unittest.TestCase):
             sam_detection.draw_analysis(crop, [polygon], None)
 
         put_text.assert_not_called()
+
+
+
+
+class EdgeRefinementTests(unittest.TestCase):
+    """A pale strip on pale fabric: no brightness step, only a dark line at each edge."""
+
+    TRUE_HALF_WIDTH = 14.0
+
+    def image(self, with_edge_lines=True):
+        canvas = np.full(SHAPE[:2], 160, np.uint8)
+        if with_edge_lines:
+            x, y = curved_curve(2400)
+            dx, dy = np.gradient(x), np.gradient(y)
+            length = np.hypot(dx, dy)
+            for side in (-1.0, 1.0):
+                edge = np.column_stack([x - dy / length * side * self.TRUE_HALF_WIDTH,
+                                        y + dx / length * side * self.TRUE_HALF_WIDTH])
+                cv2.polylines(canvas, [np.round(edge).astype(np.int32).reshape(-1, 1, 2)],
+                              False, 150, 3, cv2.LINE_AA)
+        noise = np.random.default_rng(11).normal(0, 0.6, canvas.shape)
+        return np.clip(canvas + noise, 0, 255).astype(np.uint8)
+
+    def polygon_analysis(self, half_width):
+        ring, _ = make_ribbon(*curved_curve(), half_width=half_width)
+        return strip_analysis.analyze_ring(ring, SHAPE, 10)
+
+    def test_too_wide_and_too_narrow_polygons_recover_the_same_width(self):
+        image = self.image()
+        for half_width in (9.0, 14.0, 20.0):
+            polygon = self.polygon_analysis(half_width)
+            refined = strip_analysis.refine_widths(image, polygon, search_px=10.0)
+            self.assertGreater(refined.refined_fraction, 0.9)
+            self.assertAlmostEqual(refined.average_width_px, 2 * self.TRUE_HALF_WIDTH,
+                                   delta=2.0, msg=f'half width {half_width}')
+            self.assertEqual(len(refined.segments), len(polygon.segments))
+            self.assertEqual(refined.total_length_px, polygon.total_length_px)
+
+    def test_no_edge_lines_leaves_the_polygon_widths_alone(self):
+        polygon = self.polygon_analysis(14.0)
+        refined = strip_analysis.refine_widths(
+            self.image(with_edge_lines=False), polygon, search_px=10.0)
+        np.testing.assert_array_equal(refined.widths, polygon.widths)
+        np.testing.assert_array_equal(refined.centerline, polygon.centerline)
+        self.assertEqual(refined.refined_fraction, 0.0)
+
+    def test_a_plain_brightness_step_is_not_mistaken_for_edge_lines(self):
+        canvas = np.full(SHAPE[:2], 60, np.uint8)
+        ring, _ = make_ribbon(*curved_curve(), half_width=14.0)
+        cv2.fillPoly(canvas, [ring], 200)
+        polygon = self.polygon_analysis(14.0)
+        refined = strip_analysis.refine_widths(canvas, polygon, search_px=10.0)
+        middle = slice(20, -20)  # the trimmed ends meet the strip's own cap
+        np.testing.assert_array_equal(refined.widths[middle], polygon.widths[middle])
+
+    def test_glare_on_the_strip_is_not_taken_for_an_edge(self):
+        image = self.image()
+        x, y = curved_curve(2400)
+        glare = np.column_stack([x, y + 5.0])
+        cv2.polylines(image, [np.round(glare).astype(np.int32).reshape(-1, 1, 2)],
+                      False, 235, 3, cv2.LINE_AA)
+        refined = strip_analysis.refine_widths(image, self.polygon_analysis(18.0), 10.0)
+        self.assertAlmostEqual(refined.average_width_px, 2 * self.TRUE_HALF_WIDTH, delta=2.0)
+
+    def test_refinement_is_off_unless_an_image_is_supplied(self):
+        ring, _ = make_ribbon(*curved_curve(), half_width=20.0)
+        polygon = sam_detection.Polygon('strip', 0.9, ring)
+        plain = sam_detection.analyze_detection([polygon], CAMERA_FRAME, 10)
+        self.assertIsNone(plain.analysis.refined_fraction)
+        refined = sam_detection.analyze_detection(
+            [polygon], CAMERA_FRAME, 10, refine_gray=self.image(), refine_search_px=10.0)
+        self.assertLess(refined.analysis.average_width_px, plain.analysis.average_width_px - 6)
+
+    def test_a_failing_refinement_keeps_the_polygon_measurement(self):
+        ring, _ = make_ribbon(*curved_curve(), half_width=14.0)
+        polygon = sam_detection.Polygon('strip', 0.9, ring)
+        with patch.object(strip_analysis, 'refine_widths', side_effect=RuntimeError('boom')):
+            measurement = sam_detection.analyze_detection(
+                [polygon], CAMERA_FRAME, 10, refine_gray=self.image())
+        self.assertIsNotNone(measurement)
+        self.assertIsNone(measurement.analysis.refined_fraction)
+
+
+class SubPixelTroughTests(unittest.TestCase):
+    """The trough of a dark line sits between pixels, not on one."""
+
+    @staticmethod
+    def profile(centre, convex=False, columns=41, width=2.5):
+        offsets = np.arange(-20, 21, dtype=np.float64)
+        row = (offsets - centre) ** 2 / width ** 2
+        row = row if convex else 10.0 - row
+        return offsets, np.tile(row, (3, 1))
+
+    def test_the_fit_lands_on_the_vertex_it_started_between(self):
+        for centre in (0.0, 0.25, -0.4, 0.5, -0.5):
+            offsets, depth = self.profile(centre)
+            start = 20 + int(round(centre))   # the sample the search would pick
+            found = strip_analysis._trough(offsets, depth, np.full(3, start))
+            with self.subTest(centre=centre):
+                np.testing.assert_allclose(found, centre, atol=0.02)
+
+    def test_the_fit_cannot_walk_more_than_half_a_pixel(self):
+        # The search picked the sample at -19 while the trough is really at 0: the
+        # fit may refine that choice by half a pixel, never drag it 19 pixels away.
+        offsets, depth = self.profile(centre=0.0)
+        found = strip_analysis._trough(offsets, depth, np.full(3, 1))
+        np.testing.assert_allclose(found, offsets[1] + 0.5, atol=1e-9)
+
+    def test_a_ridge_is_left_on_the_pixel_that_was_picked(self):
+        offsets, depth = self.profile(centre=0.0, convex=True)
+        found = strip_analysis._trough(offsets, depth, np.full(3, 20))
+        np.testing.assert_allclose(found, offsets[20])
+
+
+
+class FractionalEdgeRefinementTests(unittest.TestCase):
+    """Edge lines drawn a fraction of a pixel off centre, which is the normal case."""
+
+    TRUE_HALF_WIDTH = 14.3
+
+    def image(self):
+        canvas = np.full(SHAPE[:2], 160, np.uint8)
+        x, y = curved_curve(2400)
+        dx, dy = np.gradient(x), np.gradient(y)
+        length = np.hypot(dx, dy)
+        # shift=4 lets cv2 paint the line on a sixteenth of a pixel.
+        for side in (-1.0, 1.0):
+            edge = np.column_stack([x - dy / length * side * self.TRUE_HALF_WIDTH,
+                                    y + dx / length * side * self.TRUE_HALF_WIDTH])
+            cv2.polylines(canvas, [np.round(edge * 16).astype(np.int32).reshape(-1, 1, 2)],
+                          False, 150, 3, cv2.LINE_AA, 4)
+        noise = np.random.default_rng(11).normal(0, 0.6, canvas.shape)
+        return np.clip(canvas + noise, 0, 255).astype(np.uint8)
+
+    def polygon_analysis(self, half_width):
+        ring, _ = make_ribbon(*curved_curve(), half_width=half_width)
+        return strip_analysis.analyze_ring(ring, SHAPE, 10)
+
+    def test_widths_are_not_snapped_to_whole_pixels(self):
+        refined = strip_analysis.refine_widths(self.image(), self.polygon_analysis(14.0), 10.0)
+        self.assertGreater(refined.refined_fraction, 0.9)
+        fractional = np.abs(refined.widths - np.round(refined.widths))
+        self.assertGreater(float(fractional.max()), 0.1,
+                           msg='every width is a whole number of pixels')
+        self.assertAlmostEqual(refined.average_width_px, 2 * self.TRUE_HALF_WIDTH, delta=0.3)
+
+    def test_a_steady_strip_does_not_rattle_between_whole_pixels(self):
+        # Segment minima and maxima are what grading reads, so the width at each
+        # sample has to be steady to a fraction of a pixel.
+        refined = strip_analysis.refine_widths(self.image(), self.polygon_analysis(14.0), 10.0)
+        self.assertLess(float(refined.widths.std()), 0.25)
+        lowest = min(segment.minimum_width_px for segment in refined.segments)
+        self.assertGreater(lowest, 2 * self.TRUE_HALF_WIDTH - 0.5)
+
+
 
 
 if __name__ == '__main__':

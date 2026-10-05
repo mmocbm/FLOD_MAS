@@ -73,6 +73,143 @@ but are hidden from the automatic startup form. `serial`, `crop_setup`,
 drive automatic inspection. Millimetres use the saved full measurement plane;
 missing calibration is reported as unmeasured, never as a passing inspection.
 
+## Pale and white fabric
+
+A clear or white glue strip on white fabric has almost no brightness or colour of
+its own; in the camera image it differs from the fabric beside it by one or two
+gray levels and is visible only as a thin dark line along each edge. The options
+below exist for that case. **All of them are off in the shipped `config.json`, and
+with them off the inspection behaves exactly as it did before they were added.**
+Switch them on one at a time and compare with `tools/replay_capture.py`.
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `segmentation.roi` | `[0, 0, 1, 1]` | Part of the frame sent to the model, as `[x1, y1, x2, y2]` fractions. Cropping away the table gives the strip more model pixels. Results are mapped back to the full frame |
+| `segmentation.enhance.enabled` | false | Local contrast enhancement (CLAHE on lightness) of the image sent to the model only. `clip_limit` sets its strength, `tile_grid` its locality |
+| `segmentation.save_input` | false | Save the exact image sent to the model as `segmentation_input.jpg` in the capture set |
+| `segmentation.report_missing_strips` | false | Show a matched fabric that has no detected strip as a `NO STRIP` tab instead of leaving it out |
+| `segmentation.fragment_policy` | `error` | `error` stops the capture when one fabric returns several strip pieces. `largest` keeps the largest piece, marks that fabric `FRAGMENTED` and still grades the others |
+| `segmentation.min_confidence` | 0.0 | A strip below this confidence is shown as `LOW CONFIDENCE` instead of PASS/FAIL |
+| `sam_detection.refine_edges` | false | Move each strip edge from the model's outline onto the dark edge line in the full-resolution image before measuring |
+| `sam_detection.refine_search_px` | 10.0 | How far, in full-resolution pixels, an edge may be moved |
+| `capture.controls.enabled` | false | Fix exposure, gain and white balance instead of leaving them automatic. See `CONFIGURATION.md` |
+
+`NO STRIP`, `FRAGMENTED` and `LOW CONFIDENCE` fabrics are never graded: each raises
+a warning, so the dashboard shows WARNING rather than PASS. A `FRAGMENTED` or
+`LOW CONFIDENCE` tab still shows its measured figures for the operator.
+
+### Edge refinement
+
+The model outlines the strip on a 1024 × 768 image, where a 4 mm strip is about
+six pixels wide, so one model pixel of error on each edge is larger than a ±1 mm
+tolerance. With `refine_edges` on, the outline only says roughly where the strip
+is; the width is then read from the camera's own pixels. On the sample white-fabric
+images, seven deliberately wrong outlines whose average widths spanned 20 pixels
+came back within 2.5 pixels of each other.
+
+It works only where the strip edges show as dark lines. A strip with a plain
+brightness step, or nothing visible, keeps the model's widths, and
+`edge_refinement.refined_fraction` in `result.json` records how much of each strip
+was actually relocated. Per-segment values are noisier than the average. Check the
+result against a ruler or caliper measurement of the same strips before relying on
+it for grading.
+
+### Replaying saved images
+
+`tools/replay_capture.py` runs the fabric gate, the model and the measurement on
+image files, with no camera, without touching saved data and without editing
+`config.json`:
+
+```text
+.venv\Scripts\python.exe tools\replay_capture.py enhancement_images\*.jpeg
+.venv\Scripts\python.exe tools\replay_capture.py enhancement_images\*.jpeg --out replay_enhanced ^
+    --set segmentation.enhance.enabled=true --set segmentation.roi=[0.1,0.05,0.95,0.85] ^
+    --set segmentation.report_missing_strips=true --set segmentation.fragment_policy=largest ^
+    --set sam_detection.refine_edges=true
+```
+
+Each image gets a folder with `gate.json`, `segmentation_input.jpg`, `overview.jpg`,
+`fabric_NN.jpg` and `result.json`. Add `--calibration` and `--extrinsics` with the
+camera's saved files for lens correction and millimetres; without them widths stay
+in pixels.
+
+### Local glue-line detector
+
+`segmentation/glue_line.py` finds glue strips on pale fabric without a model and
+without a network connection. Select it with
+
+```json
+"segmentation": { "provider": "segmentation.glue_line:GlueLineSegmenter" }
+```
+
+The shipped provider stays `workflow`; nothing changes until this is set.
+
+The glue is the thin shiny bead: a narrow bright line with a thin dark line along
+each edge. The detector enhances the image (lighting gradient removed, then a long
+directional line filter kept separately for dark and bright lines), looks only
+inside pale fabric away from its outline, and at every point of every dark line
+looks straight across for a second dark line running the same way within the strip
+width range, with a bright line between the two. Those points are joined into
+centrelines and short faded stretches are bridged. A strip is kept only where the
+fabric along its centre is brighter than the fabric just outside its edges, which
+is the bead itself. Folds, mesh edges, seams, the wider band
+beside the bead and weave or moire texture do not have that signature.
+
+The strip outline is the pair of dark edges, so its width is the edge-to-edge
+distance in camera pixels, and the existing measurement and width grading run on
+it unchanged.
+
+Settings are in `segmentation.glue_line`; every distance is in pixels of the
+full camera frame, so they need revisiting if the camera height or the product
+changes.
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `min_width_px`, `max_width_px` | 8, 34 | Narrowest and widest bead looked for |
+| `min_length_px` | 900 | A shorter stretch is not reported |
+| `line_sensitivity` | 2.0 | Line threshold in multiples of the fabric's noise; lower finds fainter beads and more clutter |
+| `min_seen_share` | 0.55 | Share of a strip's length that must be seen rather than bridged |
+| `min_gloss_share` | 0.35 | Share of a strip along which the bright bead must be seen |
+| `fabric_margin_px` | 30 | Band along the fabric outline that is ignored |
+| `max_saturation`, `min_fabric_gray` | 45, 90 | What counts as pale fabric |
+| `join_gap_px` | 250 | Stretches of one strip closer than this, end to end, are joined |
+| `track_gaps` | true | Measure a bridged stretch where the edges are still faint enough to find, instead of guessing it |
+| `working_scale` | 1.0 | The bead is only 10-17 pixels wide, so detection runs at full resolution |
+
+Confidence is the share of the strip along which the bead was seen. With
+`segmentation.save_input` on, the saved `segmentation_input.jpg` shows the dark
+lines in red and the bright bead in green.
+
+Measured on the sample images (56 frames, 7-30 seconds each on a CPU): 52 beads
+reported, most of them 1200-1950 pixels long. Widths repeat from frame to frame
+(about 15-19 pixels on the two-panel product, about 12 on the four-panel one).
+Beads are still missed or cut short where the frame is soft or mesh lies over the
+bead, and frame 0036, the softest, gives none. It reports nothing on dark fabric,
+which the workflow provider already handles. Widths have not been checked against
+a ruler. Turning `track_gaps` on changes 13 of the 56 frames, almost all of them
+by less than 0.01 in confidence; the strip it most repairs was the second bead of
+the WhatsApp frame, whose confidence goes from 0.562 to 0.652 and whose width from
+12.6 to 15.8 pixels, in line with the other beads in the same frame.
+
+`line_sensitivity` (default 2.0) and `min_seen_share` (default 0.55) trade
+completeness against clutter: weave and moire can be chained into something
+strip-shaped only by bridging long gaps, and `min_seen_share` is what rejects
+those. `join_gap_px` (default 250) is the longest faded stretch that is bridged.
+Where a bead fades but its two edges are still there, `track_gaps` looks for them
+again along the stretch at a relaxed threshold and measures the width there, so
+that stretch counts as seen rather than as a guess; if neither edge survives, the
+straight bridge is used and confidence falls exactly as before.
+
+### What software cannot fix
+
+- **The fabric classifier** was not trained on white fabric. If it reports
+  `no_fabric` for a white piece the capture is skipped and the tabs are cleared.
+  Set `capture_storage.save_rejected_triggers` to true during trials so those
+  frames are kept, then retrain the classifier with them.
+- **Lighting.** Even overhead light hides clear glue. A light at a low angle across
+  the table turns the strip edges into strong lines and helps more than any setting
+  here.
+
 ## Where to modify future versions
 
 - `auto_trigger/checkpoint.py`: hand-cycle timing and debounce, derived from the reference.
@@ -84,6 +221,8 @@ missing calibration is reported as unmeasured, never as a passing inspection.
 - `inspection/measurement.py`: per-fabric use of the existing measurement method.
 - `inspection/result_view.py`: tab presentation; `inspection/dashboard.py`: UI integration.
 - `inspection/storage.py`: source/derived image formats and capture-set retention.
+- `strip_analysis.py` (`refine_widths`): full-resolution edge refinement.
+- `tools/replay_capture.py`: offline replay of saved images through every stage.
 
 ### Local model contract
 
@@ -116,6 +255,7 @@ Automatic/
     overview.jpg       # compact full-frame result
     fabric_01.jpg      # annotated individual fabric (up to fabric_04.jpg)
     result.json        # frame polygons, per-segment measurements, warnings/errors
+    segmentation_input.jpg  # only with segmentation.save_input: the image sent to the model
 ```
 
 By default rejected gates produce no files. With `save_rejected_triggers=true`,

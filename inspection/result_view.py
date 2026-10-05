@@ -101,6 +101,8 @@ class FabricResultView(CropResultView):
                      f"{measurement['width_tolerance_mm']:g} mm\n")
             text += '    '.join(f"{s['index']}: {s['average_width_mm']:.2f} mm"
                                 for s in measurement['segments'])
+        elif item['status'] == 'NO STRIP':
+            text += '  ·  Fabric found, but no glue strip was detected on it'
         else:
             text += '  ·  Millimetre measurement unavailable — check calibration/segmentation'
         self.summary.configure(text=text)

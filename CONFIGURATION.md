@@ -91,6 +91,19 @@ Later launches try that verified size immediately, avoiding another full search.
 Changing the requested size, frame rate, format, `use_dshow`, or fallback list makes
 the saved result invalid and automatically performs a fresh search.
 
+`capture.controls` fixes the camera's exposure and white balance. It is off by
+default, which leaves every control with the driver exactly as before. Automatic
+exposure drifts from one capture to the next, which matters when the feature being
+measured differs from its background by only a few gray levels. With `enabled` set
+to `true`, `auto_exposure`, `exposure`, `gain`, `auto_white_balance` and
+`white_balance` are sent to the driver, in that order, after the resolution is
+settled; remove a key to leave that control alone. The values are the camera
+backend's own units and are passed through unchanged, and they differ between
+backends and camera models: the numbers shipped in `config.json` are placeholders,
+not tested settings for this camera. Find working values with the camera's own
+control panel or by trial before enabling this. A control the driver refuses does not stop the camera. The setting applies
+to every use of the camera, including calibration. Restart after changing it.
+
 Camera threads continuously retain the newest full-resolution image. Camera Setup
 borrows these streams, so switching pages does not reopen devices. The dashboard
 starts the devices in the background on first launch. Full-size photos are used
@@ -581,6 +594,12 @@ crop points through the region homography.
 - `serial`: Arduino connection enabled, port and baud rate.
 - `inspection`: selectable sizes, starting size, required strip width in millimetres,
   allowed plus/minus width tolerance, and result display time per crop.
+- `segmentation.glue_line`: the white-fabric detector's own settings; see
+  AUTOMATIC_INSPECTION.md for the full table. `track_gaps` is true by default:
+  where a bead fades far enough to break its run into two pieces but its two edges
+  are still faintly there, the stretch between them is measured rather than
+  guessed, so it counts towards the strip's confidence. Set it to false to fall
+  back to the straight bridge everywhere.
 - `color_mask`: retained legacy values; the current dashboard does not use them.
 
 Keep JSON syntax valid (double quotes, no trailing commas). Invalid key settings

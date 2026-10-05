@@ -375,6 +375,8 @@ def analyze_detection(
     scale: "plane_scale.PlaneScale | None" = None,
     target_width_mm: float | None = None,
     width_tolerance_mm: float | None = None,
+    refine_gray: np.ndarray | None = None,
+    refine_search_px: float = 10.0,
 ) -> StripMeasurement | None:
     """Measure the adhesive strip traced by the largest polygon.
 
@@ -385,6 +387,10 @@ def analyze_detection(
 
     ``scale`` restates the result in millimetres; without it the measurement
     stays in crop pixels.
+
+    ``refine_gray`` is the grayscale image the polygons were found in. When it is
+    given, each strip edge is moved onto the nearest real edge in those pixels
+    before any width is reported; without it the widths are the polygon's own.
     """
     if not polygons or segment_count < 1:
         return None
@@ -394,6 +400,12 @@ def analyze_detection(
         analysis = strip_analysis.analyze_ring(
             polygons[index].ring, image_shape, segment_count
         )
+        if analysis is not None and refine_gray is not None:
+            try:
+                analysis = strip_analysis.refine_widths(
+                    refine_gray, analysis, refine_search_px)
+            except Exception:  # noqa: BLE001 - keep the unrefined measurement
+                pass
         if analysis is not None and scale is not None:
             analysis = strip_analysis.to_metric(analysis, scale)
         if (analysis is not None and target_width_mm is not None

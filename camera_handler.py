@@ -60,6 +60,17 @@ def _write_cached_resolution(index, signature, size):
             pass
 
 
+# Driver controls in the order they must be applied: an automatic mode has to be
+# switched off before the value it governs will stick.
+CAMERA_CONTROLS = (
+    ('auto_exposure', cv2.CAP_PROP_AUTO_EXPOSURE),
+    ('exposure', cv2.CAP_PROP_EXPOSURE),
+    ('gain', cv2.CAP_PROP_GAIN),
+    ('auto_white_balance', cv2.CAP_PROP_AUTO_WB),
+    ('white_balance', cv2.CAP_PROP_WB_TEMPERATURE),
+)
+
+
 class CameraStream:
     """One thread owns the device. Consumers read the latest full-size frame."""
     def __init__(self, index):
@@ -68,6 +79,7 @@ class CameraStream:
         self.frame = None
         self.error = None
         self.resolution_warning = None
+        self.control_warnings = []
         self.stopped = threading.Event()
         spec = camera_config(index)
         self.rotation = spec.get('rotation', 0)
@@ -114,6 +126,7 @@ class CameraStream:
                 actual = best[2]
                 self.resolution_warning = self._resolution_message(requested, actual)
             _write_cached_resolution(index, signature, actual)
+            self.control_warnings = self._apply_controls()
             self.size = self._rotated_size(actual)
             self.frame = frame
         except Exception:
@@ -121,6 +134,21 @@ class CameraStream:
             raise
         self.thread = threading.Thread(target=self._capture, daemon=True)
         self.thread.start()
+
+    def _apply_controls(self):
+        """Fix exposure and white balance when configured; names the driver refused.
+
+        Applied after the resolution is settled, because a mode change can reset
+        them. Values are the backend's own units and are passed through as given.
+        """
+        controls = CONFIG['capture'].get('controls')
+        if not isinstance(controls, dict) or not controls.get('enabled', False):
+            return []
+        refused = []
+        for name, prop in CAMERA_CONTROLS:
+            if name in controls and self.cap.set(prop, float(controls[name])) is False:
+                refused.append(name)
+        return refused
 
     def _resolution_message(self, requested, actual):
         return (

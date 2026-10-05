@@ -55,6 +55,41 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(stream.cap.released)
 
     @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_exposure_controls_are_untouched_unless_enabled(self, _):
+        controls = (cv2.CAP_PROP_AUTO_EXPOSURE, cv2.CAP_PROP_EXPOSURE, cv2.CAP_PROP_GAIN,
+                    cv2.CAP_PROP_AUTO_WB, cv2.CAP_PROP_WB_TEMPERATURE)
+        stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            self.assertFalse(set(controls) & set(stream.cap.properties))
+            self.assertEqual(stream.control_warnings, [])
+        finally:
+            stream.release()
+            stream.thread.join(1)
+        with patch.dict(CONFIG['capture'], {'controls': {
+                'enabled': True, 'auto_exposure': 0.25, 'exposure': -7.0}}):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            self.assertEqual(stream.cap.properties[cv2.CAP_PROP_AUTO_EXPOSURE], 0.25)
+            self.assertEqual(stream.cap.properties[cv2.CAP_PROP_EXPOSURE], -7.0)
+            self.assertNotIn(cv2.CAP_PROP_GAIN, stream.cap.properties)
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_a_control_the_driver_refuses_is_reported_not_fatal(self, _):
+        with patch.object(Device, 'set', lambda self, key, value: key != cv2.CAP_PROP_EXPOSURE), \
+                patch.dict(CONFIG['capture'], {'controls': {'enabled': True, 'exposure': -7.0,
+                                                            'gain': 1.0}}):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            self.assertEqual(stream.control_warnings, ['exposure'])
+            self.assertTrue(stream.read()[0])
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
     def test_rotation_is_applied_to_every_frame_and_reported_size(self, _):
         spec = CONFIG['cameras'][0]
         with patch.dict(spec, {'rotation': 90}):
