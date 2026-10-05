@@ -1,5 +1,5 @@
 # Complete direct runtime dependencies for the vision-inspection application.
-# Tested with Python 3.12 and 3.13 on Windows.
+# Automatic inspection uses Python 3.12.10 on Windows.
 #
 # Install with:
 #   python -m pip install -r requirements.txt
@@ -27,3 +27,11 @@ inference-sdk==1.7.1
 # Geometry, morphology, skeleton and measurement algorithms
 scipy==1.18.1
 scikit-image==0.26.0
+
+# Automatic hand trigger and Teachable Machine legacy H5 classifier (Python 3.12).
+# Both OpenCV distributions are pinned identically: inference-sdk requires plain
+# OpenCV, MediaPipe requires contrib. Do not upgrade only one distribution.
+opencv-contrib-python==4.12.0.88
+mediapipe==1.0.1
+tensorflow==2.21.0
+tf-keras==2.21.0

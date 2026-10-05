@@ -107,6 +107,9 @@ class StartupWindow:
         notebook = ttk.Notebook(self.content)
         notebook.pack(fill='both', expand=True)
         for name, value in self.config.items():
+            if 'auto_trigger' in self.config and name in (
+                    'crop_setup', 'color_mask', 'serial', 'region_homography'):
+                continue  # legacy configuration retained only for shared calibration code
             page = ttk.Frame(notebook)
             notebook.add(page, text=name.replace('_', ' ').title())
             canvas = tk.Canvas(page, highlightthickness=0)
@@ -127,6 +130,11 @@ class StartupWindow:
         ttk.Button(actions, text='Save & restart', command=self.save).pack(side='right')
 
     def add_fields(self, form, value, path, labels):
+        if 'auto_trigger' in self.config:
+            if path[:1] == ('sam_detection',) and len(path) > 1 and path[1] != 'strip_segments':
+                return
+            if path[:1] == ('cameras',) and len(path) > 1 and path[1] != 0:
+                return
         if isinstance(value, dict):
             for name, child in value.items():
                 self.add_fields(form, child, path + (name,), labels + [name.replace('_', ' ').title()])
@@ -139,7 +147,8 @@ class StartupWindow:
             ttk.Label(form, text=label).grid(row=row, column=0, sticky='w', padx=(0, 18), pady=5)
             variable = tk.BooleanVar(value=value) if isinstance(value, bool) else tk.StringVar(value=str(value))
             if path == ('camera_count',):
-                control = ttk.Combobox(form, textvariable=variable, values=('1', '2'), state='readonly')
+                choices = ('1',) if 'auto_trigger' in self.config else ('1', '2')
+                control = ttk.Combobox(form, textvariable=variable, values=choices, state='readonly')
             elif isinstance(value, bool):
                 control = ttk.Checkbutton(form, variable=variable)
             else:

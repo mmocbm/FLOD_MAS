@@ -37,6 +37,7 @@ Dataset_capture/
 temp_calibration_images/
 results/
 tests/ui_preview.png
+tests/automatic_ui_preview.png
 
 # Packaging output
 build/

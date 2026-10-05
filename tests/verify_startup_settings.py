@@ -19,10 +19,14 @@ def verify():
     assert window.timer is not None
     window.settings()
     assert window.timer is None
-    assert len(window.fields) > 100
+    assert len(window.fields) > 50
     paths = {path for path, _, _ in window.fields}
     assert ('cameras', 0, 'width') in paths
-    assert ('sam_detection', 'send_crops', '1', 0) in paths
+    assert ('sam_detection', 'send_crops', '1', 0) not in paths
+    assert ('auto_trigger', 'hand_absence_seconds') in paths
+    assert ('capture_storage', 'save_rejected_triggers') in paths
+    assert ('capture_storage', 'max_sets') in paths
+    assert ('result_view', 'show_live_preview') in paths
     width = next(variable for path, _, variable in window.fields
                  if path == ('cameras', 0, 'width'))
     width.set('invalid')

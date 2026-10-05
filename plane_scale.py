@@ -151,6 +151,37 @@ def load_plane_scale(
     return PlaneScale(homography=homography, mm_per_pixel=mm_per_pixel)
 
 
+def load_frame_scale(camera_number, frame_size, calibration_path=None, extrinsics_path=None):
+    """Undistorted full-frame pixels -> existing calibrated plane, in mm.
+
+    ImageUndistorter preserves the scaled intrinsic matrix and frame size.
+    There is no manually selected crop transform in automatic inspection.
+    """
+    if calibration_path is None or extrinsics_path is None:
+        calibration_path, extrinsics_path = _paths_for(camera_number)
+    calibration = _read_json(calibration_path, 'camera calibration')
+    extrinsics = _read_json(extrinsics_path, 'camera extrinsics')
+    try:
+        matrix = scale_camera_matrix(np.asarray(calibration['camera_matrix'], np.float64),
+                                     calibration['image_size'], frame_size)
+        rvec = np.asarray(extrinsics['rvec'], np.float64).reshape(3, 1)
+        tvec = np.asarray(extrinsics['tvec'], np.float64).reshape(3, 1)
+        w, h = frame_size
+        source = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], np.float32)
+        target = np.asarray([pixel_to_plane(p, matrix, rvec, tvec) * _MM_PER_METRE
+                             for p in source], np.float32)
+        if not np.isfinite(target).all() or abs(cv2.contourArea(target)) < _MIN_CROP_AREA_MM2:
+            raise ValueError('Invalid calibrated measurement plane')
+        homography = cv2.getPerspectiveTransform(source, target)
+        centre = np.array([[[w/2, h/2], [w/2+1, h/2]]], np.float64)
+        stepped = cv2.perspectiveTransform(centre, homography)[0]
+        if not np.isfinite(homography).all():
+            raise ValueError('Invalid frame calibration')
+        return PlaneScale(homography, float(np.linalg.norm(stepped[1]-stepped[0])))
+    except (KeyError, ValueError, cv2.error) as error:
+        raise PlaneScaleError(str(error)) from error
+
+
 def _paths_for(camera_number: int) -> tuple[Path, Path]:
     """The calibration and extrinsics files named by config for a camera.
 

@@ -164,6 +164,7 @@ class CameraStream:
                 # raw frame. Any transformation here can let a driver queue grow.
                 with self.lock:
                     self.frame = frame if ok and frame is not None else None
+                    self.sequence = getattr(self, 'sequence', 0) + 1
                 if not ok:
                     time.sleep(0.05)
         except Exception as error:
@@ -182,6 +183,15 @@ class CameraStream:
         # snapshot is safe after releasing the lock. Apply rotation here so it
         # can never delay acquisition of the next device frame.
         return True, self._rotate_frame(frame)
+
+    def read_snapshot(self):
+        """Return a frame and its acquisition sequence atomically for triggering."""
+        with self.lock:
+            frame = self.frame
+            sequence = getattr(self, 'sequence', 0)
+        if frame is None or self.stopped.is_set():
+            return None, sequence
+        return self._rotate_frame(frame), sequence
 
     def isOpened(self):
         return not self.stopped.is_set() and self.thread.is_alive()

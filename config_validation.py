@@ -1,7 +1,55 @@
 import cv2
+import math
+
+
+def validate_automatic_config(config):
+    if not isinstance(config.get('result_view', {}).get('show_live_preview', True), bool):
+        raise ValueError('result_view.show_live_preview must be true or false')
+    if config.get('camera_count') != 1:
+        raise ValueError('Automatic inspection requires camera_count = 1')
+
+    def number(section, key, minimum, maximum=None, integer=False):
+        value = config[section][key]
+        kind = int if integer else (int, float)
+        if (isinstance(value, bool) or not isinstance(value, kind) or not math.isfinite(value)
+                or value < minimum or (maximum is not None and value > maximum)):
+            raise ValueError(f'{section}.{key} has an invalid value')
+
+    for key in ('hand_absence_seconds',):
+        number('auto_trigger', key, 0.05)
+    number('auto_trigger', 'min_hand_present_seconds', 0)
+    for key in ('debounce_frames', 'detect_width', 'max_hands'):
+        number('auto_trigger', key, 1, integer=True)
+    for key in ('hand_confidence', 'fabric_min_confidence'):
+        number('auto_trigger', key, 0.01, 1)
+    labels = config['auto_trigger']['accepted_labels']
+    if not isinstance(labels, list) or set(labels) != {'full_fabric', 'half_fabric'}:
+        raise ValueError('Automatic fabric gate must accept full_fabric and half_fabric')
+    for key in ('input_width', 'input_height'):
+        number('segmentation', key, 1, integer=True)
+    number('segmentation', 'max_fabrics', 1, 4, integer=True)
+    number('segmentation', 'max_retries', 0, integer=True)
+    number('segmentation', 'timeout_seconds', 0.1)
+    provider = config['segmentation']['provider']
+    if not isinstance(provider, str) or (provider != 'workflow' and ':' not in provider):
+        raise ValueError('segmentation.provider must be workflow or module:Factory')
+    number('capture_storage', 'max_sets', 1, integer=True)
+    number('capture_storage', 'jpeg_quality', 1, 100, integer=True)
+    number('capture_storage', 'preview_max_edge', 64, integer=True)
+    for section, key in [('capture_storage', 'save_rejected_triggers'),
+                         ('segmentation', 'convert_to_rgb')]:
+        if not isinstance(config[section][key], bool):
+            raise ValueError(f'{section}.{key} must be true or false')
+    directory = config['capture_storage']['directory']
+    from pathlib import PureWindowsPath
+    if (not isinstance(directory, str) or not directory.strip() or
+            PureWindowsPath(directory).is_absolute() or '..' in PureWindowsPath(directory).parts):
+        raise ValueError('capture_storage.directory must be a relative data directory')
 
 
 def validate_config(CONFIG):
+    if 'auto_trigger' in CONFIG:
+        validate_automatic_config(CONFIG)
     # Avoid two camera/processing workers each recruiting all CPU cores. This
     # limits OpenCV's internal pool, not acquisition or inspection worker threads.
     opencv_threads = CONFIG.get('performance', {}).get('opencv_threads', 1)

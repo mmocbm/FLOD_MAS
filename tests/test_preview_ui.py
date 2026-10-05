@@ -44,7 +44,7 @@ class PreviewUITests(unittest.TestCase):
         app.update_video_feed()
         app.camera1.get_raw_frame_with_ret.assert_not_called()
         app.result_view.tick.assert_not_called()
-        app.root.after.assert_called_once_with(250, app.update_video_feed)
+        app.root.after.assert_called_once_with(CONFIG['preview']['interval_ms'], app.update_video_feed)
 
     @patch('main_1366.time.perf_counter', side_effect=[0.0, 0.5])
     def test_slow_feed_yields_and_does_not_read_hidden_camera(self, clock):
@@ -55,7 +55,9 @@ class PreviewUITests(unittest.TestCase):
         app.maximized_camera = 1
         app.camera1 = MagicMock()
         app.camera2 = MagicMock()
-        app.camera1.get_raw_frame_with_ret.return_value = (True, np.zeros((4, 4, 3)))
+        app.camera1.stream.read_snapshot.return_value = (np.zeros((4, 4, 3)), 1)
+        app.result_view = None
+        app._submit_automatic_frame = MagicMock()
         app._display_video_frame = MagicMock()
         app.update_video_feed()
         app.camera2.get_raw_frame_with_ret.assert_not_called()

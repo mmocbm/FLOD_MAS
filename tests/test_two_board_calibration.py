@@ -92,10 +92,9 @@ class TwoBoardCalibrationTests(unittest.TestCase):
         with patch('CalibrateAPP.generate_two_boards.cv2.imwrite', return_value=True) as write:
             paths = generate_two_boards(Path(__file__).parent, pixels_per_square=20)
 
-        self.assertEqual(
-            paths, [Path(__file__).parent / 'charuco_board_1.png',
-                    Path(__file__).parent / 'charuco_board_2.png'],
-        )
+        from app_config import project_path
+        output = Path(project_path(Path(__file__).parent))
+        self.assertEqual(paths, [output / 'charuco_board_1.png', output / 'charuco_board_2.png'])
         self.assertEqual(write.call_count, 2)
         self.assertFalse(np.array_equal(write.call_args_list[0].args[1],
                                         write.call_args_list[1].args[1]))
