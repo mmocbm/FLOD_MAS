@@ -2,7 +2,7 @@
   "camera_count": 1,
   "cameras": [
     {
-      "index": 2,
+      "index": 0,
       "width": 4608,
       "height": 3456,
       "fps": 10,
