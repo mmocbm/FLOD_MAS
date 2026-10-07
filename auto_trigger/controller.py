@@ -78,13 +78,13 @@ class AutoController(threading.Thread):
         future, self.future = self.future, None
         try:
             result = future.result()
-            if self.job_generation == self.generation and self.active:
+            if self.job_generation == self.generation and self.active and not self.stopped.is_set():
                 self.events.put(('result', self.generation, result))
             else:
                 self._status('Previous capture saved; checking the latest fabric arrangement')
         except Exception as error:
-            # Errors are always surfaced, even if that capture is now obsolete.
-            self.events.put(('error', self.generation, str(error)))
+            if self.job_generation == self.generation and self.active and not self.stopped.is_set():
+                self.events.put(('error', self.generation, str(error)))
         if self.pending_job is not None:
             job = self.pending_job
             if (self.active and not self.stopped.is_set()
@@ -103,7 +103,7 @@ class AutoController(threading.Thread):
                 self.events.put(('error', self.generation, str(error)))
 
     def _start_job(self, job):
-        self._status('Segmenting and measuring glue strips…')
+        self._status('Local AI — unfolding and inspecting the rightmost source line…')
         self.future = Future()
         self.job_generation = job['generation']
 
@@ -111,7 +111,8 @@ class AutoController(threading.Thread):
             try:
                 future.set_result(self.pipeline.run(
                     job['original'], job['corrected'], job['metadata'],
-                    job['profile']['width'], job['profile']['tolerance'], job['path']))
+                    job['profile']['width'], job['profile']['tolerance'], job['path'],
+                    lambda message: self.events.put(('status', job['generation'], message))))
             except Exception as error:
                 future.set_exception(error)
             self.wake.set()
@@ -121,7 +122,7 @@ class AutoController(threading.Thread):
     def run(self):
         hand = None
         try:
-            self._status('Loading hand and fabric models…')
+            self._status('Loading hand, fabric and local ONNX inspection models…')
             hand = self.hand_factory(self.settings)
             if self.stopped.is_set():
                 return

@@ -25,19 +25,29 @@ def validate_automatic_config(config):
     labels = config['auto_trigger']['accepted_labels']
     if not isinstance(labels, list) or set(labels) != {'full_fabric', 'half_fabric'}:
         raise ValueError('Automatic fabric gate must accept full_fabric and half_fabric')
-    for key in ('input_width', 'input_height'):
-        number('segmentation', key, 1, integer=True)
-    number('segmentation', 'max_fabrics', 1, 4, integer=True)
-    number('segmentation', 'max_retries', 0, integer=True)
-    number('segmentation', 'timeout_seconds', 0.1)
-    provider = config['segmentation']['provider']
-    if not isinstance(provider, str) or (provider != 'workflow' and ':' not in provider):
-        raise ValueError('segmentation.provider must be workflow or module:Factory')
+    if 'local_inspection' in config:
+        number('local_inspection', 'source_width', 32, integer=True)
+        number('local_inspection', 'offset_pixels', 0.5)
+        for key in ('source_model', 'glue_model'):
+            value = config['local_inspection'][key]
+            if not isinstance(value, str) or not value.strip() or not value.lower().endswith('.onnx'):
+                raise ValueError(f'local_inspection.{key} must name an ONNX model')
+    if 'local_inspection' not in config:
+        for key in ('input_width', 'input_height'):
+            number('segmentation', key, 1, integer=True)
+        number('segmentation', 'max_fabrics', 1, 4, integer=True)
+        number('segmentation', 'max_retries', 0, integer=True)
+        number('segmentation', 'timeout_seconds', 0.1)
+        provider = config['segmentation']['provider']
+        if not isinstance(provider, str) or (provider != 'workflow' and ':' not in provider):
+            raise ValueError('segmentation.provider must be workflow or module:Factory')
     number('capture_storage', 'max_sets', 1, integer=True)
     number('capture_storage', 'jpeg_quality', 1, 100, integer=True)
     number('capture_storage', 'preview_max_edge', 64, integer=True)
-    for section, key in [('capture_storage', 'save_rejected_triggers'),
-                         ('segmentation', 'convert_to_rgb')]:
+    bool_fields = [('capture_storage', 'save_rejected_triggers')]
+    if 'local_inspection' not in config:
+        bool_fields.append(('segmentation', 'convert_to_rgb'))
+    for section, key in bool_fields:
         if not isinstance(config[section][key], bool):
             raise ValueError(f'{section}.{key} must be true or false')
     directory = config['capture_storage']['directory']

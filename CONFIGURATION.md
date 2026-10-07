@@ -1,7 +1,8 @@
 # Application settings
 
 For the `automate-Detection-method` branch, use [Automatic inspection](AUTOMATIC_INSPECTION.md)
-for trigger, segmentation, persistent fabric tabs and capture-retention settings.
+for hand triggers, local ONNX inspection of the rightmost source line, calibrated
+measurements, overlay/mask results and capture-retention settings.
 The manual crop/ESP inspection sections below describe the older workflow.
 
 Start `main_1366.py` and press **S** (or click **Settings**) during the five-second countdown. Change values in the grouped settings tabs and click **Save & restart**. The app validates and saves `config.json`, then initializes the app immediately with the new settings. Settings are completed before configuration-dependent modules and cameras load, so no external Python relaunch or machine-specific executable path is required. Only `config.json` stays beside the application code, regardless of the launch directory. Invalid values leave the editor open and the saved file unchanged. **Cancel / start app** discards edits. If you do nothing for five seconds, the app starts with the current settings. You can still edit `config.json` manually if needed.

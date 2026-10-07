@@ -38,6 +38,7 @@ temp_calibration_images/
 results/
 tests/ui_preview.png
 tests/automatic_ui_preview.png
+tests/local_inspection_preview.jpg
 
 # Packaging output
 build/

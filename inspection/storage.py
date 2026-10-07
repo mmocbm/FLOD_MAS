@@ -60,6 +60,12 @@ class CaptureStore:
         with self.lock:
             self._json(path / 'result.json', record)
 
+    def save_mask(self, path, mask):
+        self._image(path / 'mask.png', mask, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+
+    def save_overlay(self, path, overlay):
+        self._image(path / 'overlay.png', overlay, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+
     def update_metadata(self, path, metadata):
         with self.lock:
             self._json(path / 'capture.json', metadata)

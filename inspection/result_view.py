@@ -7,12 +7,12 @@ from ui_theme import COLORS as C, button as themed_button
 
 
 class FabricResultView(CropResultView):
-    def __init__(self, parent, show_live_preview=True):
+    def __init__(self, parent, show_live_preview=True, title='FABRIC RESULTS'):
         self.records = []
         self.show_live_preview = show_live_preview
         self._live_photo = None
         self._live_item = None
-        super().__init__(parent, lambda: None, title='FABRIC RESULTS')
+        super().__init__(parent, lambda: None, title=title)
 
     def _build(self):
         super()._build()
@@ -104,3 +104,78 @@ class FabricResultView(CropResultView):
         else:
             text += '  ·  Millimetre measurement unavailable — check calibration/segmentation'
         self.summary.configure(text=text)
+
+
+class LineResultView(FabricResultView):
+    """One inspected boundary, with selectable full-resolution overlay and mask."""
+    def __init__(self, parent, show_live_preview=True):
+        self.measurement = None
+        super().__init__(parent, show_live_preview, title='RIGHTMOST LINE INSPECTION')
+
+    def _tab_label(self, index):
+        return ('OVERLAY', 'MASK')[index] if index < 2 else ''
+
+    def _build(self):
+        from tkinter import ttk
+        super()._build()
+        for button in self._tab_buttons[2:]:
+            button.pack_forget()
+        self._countdown_label.configure(text='Captured result · hand monitoring active')
+        table_frame = tk.Frame(self, bg=C['surface'])
+        table_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        style = ttk.Style(self)
+        style.configure('Inspection.Treeview', background=C['surface'],
+                        fieldbackground=C['surface'], foreground=C['text_soft'],
+                        rowheight=22, font=('Segoe UI', 10), borderwidth=0)
+        style.configure('Inspection.Treeview.Heading', background=C['surface_2'],
+                        foreground=C['text'], font=('Segoe UI', 10, 'bold'))
+        style.map('Inspection.Treeview', background=[('selected', C['accent_dark'])],
+                  foreground=[('selected', C['text'])])
+        columns = ('segment', 'average_px', 'minimum_px', 'maximum_px',
+                   'average_mm', 'minimum_mm', 'maximum_mm', 'grade')
+        self.segment_table = ttk.Treeview(table_frame, columns=columns, show='headings', height=5,
+                                         style='Inspection.Treeview')
+        self.segment_table.tag_configure('PASS', foreground=C['success'])
+        self.segment_table.tag_configure('FAIL', foreground=C['danger'])
+        for key, label in zip(columns, ('Segment', 'Avg px', 'Min px', 'Max px',
+                                       'Avg mm', 'Min mm', 'Max mm', 'Grade')):
+            self.segment_table.heading(key, text=label)
+            self.segment_table.column(key, width=85, anchor='center', stretch=True)
+        scroll = ttk.Scrollbar(table_frame, orient='vertical', command=self.segment_table.yview)
+        self.segment_table.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.segment_table.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def show_inspection(self, result):
+        self.measurement = result['measurement']
+        self.records = [self.measurement]
+        self.show_crops([result['overlay'], cv2.cvtColor(result['mask'], cv2.COLOR_GRAY2BGR)])
+        for button in self._tab_buttons[:2]:
+            button.configure(state=tk.NORMAL)
+        self.segment_table.delete(*self.segment_table.get_children())
+        for segment in self.measurement['segments']:
+            values = [segment['segment']]
+            for unit in ('px', 'mm'):
+                for name in ('average', 'minimum', 'maximum'):
+                    value = segment[f'{name}_width_{unit}']
+                    values.append('—' if value is None else f'{value:.2f}')
+            grade = segment['within_tolerance']
+            values.append('—' if grade is None else 'PASS' if grade else 'FAIL')
+            self.segment_table.insert('', 'end', values=values, tags=(values[-1],))
+        self._show_summary()
+
+    def _show_summary(self):
+        if self.measurement is None:
+            return
+        m = self.measurement
+        mean_px = '—' if m['mean_width_px'] is None else f"{m['mean_width_px']:.2f}"
+        text = (f"Rightmost line {m['selected_line']} / {m['line_count']} · {m['status']} · "
+                f"{m['component_count']} adhesive component(s) · {m['seconds']:.2f}s\n"
+                f"Total length {m['length_px']:.2f} px · Mean width {mean_px} px")
+        if m['metric']:
+            text += (f" · Length {m['length_mm']:.2f} mm · Width {m['mean_width_mm']:.2f} mm"
+                     f" · Target {m['target_width_mm']:g} ± {m['tolerance_mm']:g} mm")
+        else:
+            text += ' · Millimetre measurement unavailable'
+        text += '\nWidths and segment grades describe the longest adhesive component.'
+        self.summary.configure(text=text, font=('Segoe UI', 10, 'bold'), wraplength=1000)

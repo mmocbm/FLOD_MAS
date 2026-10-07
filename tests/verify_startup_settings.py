@@ -27,6 +27,9 @@ def verify():
     assert ('capture_storage', 'save_rejected_triggers') in paths
     assert ('capture_storage', 'max_sets') in paths
     assert ('result_view', 'show_live_preview') in paths
+    assert ('local_inspection', 'source_width') in paths
+    assert ('local_inspection', 'offset_pixels') in paths
+    assert not any(path[0] in ('segmentation', 'sam_detection') for path in paths)
     width = next(variable for path, _, variable in window.fields
                  if path == ('cameras', 0, 'width'))
     width.set('invalid')

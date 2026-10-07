@@ -53,7 +53,6 @@ def run():
             visible_inside(size_button, app.size_win)
         visible_inside(app.strip_width_entry, app.size_win)
         visible_inside(app.strip_width_tolerance_entry, app.size_win)
-        visible_inside(app.result_display_seconds_entry, app.size_win)
 
         app.open_crop_setup_window()
         root.update()

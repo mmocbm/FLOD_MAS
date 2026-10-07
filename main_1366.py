@@ -489,10 +489,10 @@ class IndustrialDashboard(AutomaticDashboard):
 
         settings = themed_card(content)
         settings.pack(fill=tk.X, pady=14)
-        for column in range(3):
+        for column in range(2):
             settings.columnconfigure(column, weight=1, uniform="limits")
-        section_label(settings, "Inspection limits and result timing").grid(
-            row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(17, 12))
+        section_label(settings, "Rightmost line inspection limits").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(17, 12))
 
         label_options = {"fg": C["text_soft"], "bg": C["card"], "font": (FONT, 10, "bold")}
         tk.Label(settings, text="Required width (mm)", **label_options).grid(
@@ -516,17 +516,6 @@ class IndustrialDashboard(AutomaticDashboard):
         )
         self.strip_width_tolerance_entry.grid(
             row=2, column=1, padx=20, pady=(7, 20), sticky="ew", ipady=8)
-
-        tk.Label(settings, text="Fabric tab time (seconds)", **label_options).grid(
-            row=1, column=2, sticky="w", padx=20)
-        self.result_display_seconds_entry = tk.Entry(
-            settings, textvariable=self.result_display_seconds_var,
-            bg=C["surface_2"], fg=C["text"], insertbackground=C["text"],
-            font=(FONT, 12), relief=tk.FLAT, highlightthickness=1,
-            highlightbackground=C["border"], justify=tk.CENTER,
-        )
-        self.result_display_seconds_entry.grid(
-            row=2, column=2, padx=20, pady=(7, 20), sticky="ew", ipady=8)
 
         footer = tk.Frame(content, bg=C["bg"])
         footer.pack(fill=tk.X, pady=(4, 0))

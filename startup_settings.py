@@ -108,7 +108,7 @@ class StartupWindow:
         notebook.pack(fill='both', expand=True)
         for name, value in self.config.items():
             if 'auto_trigger' in self.config and name in (
-                    'crop_setup', 'color_mask', 'serial', 'region_homography'):
+                    'crop_setup', 'color_mask', 'serial', 'region_homography', 'segmentation', 'sam_detection'):
                 continue  # legacy configuration retained only for shared calibration code
             page = ttk.Frame(notebook)
             notebook.add(page, text=name.replace('_', ' ').title())
@@ -131,6 +131,8 @@ class StartupWindow:
 
     def add_fields(self, form, value, path, labels):
         if 'auto_trigger' in self.config:
+            if path == ('inspection', 'result_display_seconds'):
+                return
             if path[:1] == ('sam_detection',) and len(path) > 1 and path[1] != 'strip_segments':
                 return
             if path[:1] == ('cameras',) and len(path) > 1 and path[1] != 0:

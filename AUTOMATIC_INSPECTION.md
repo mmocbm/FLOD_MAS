@@ -1,156 +1,155 @@
-# Automatic inspection
+# Automatic local ONNX inspection
 
 Run `run_automatic.bat`, or `.venv\Scripts\python.exe main_1366.py`.
-The existing camera setup, input format, resolution, rotation, lens calibration
-and measurement-surface files are used. Camera 1 is the single active camera;
-its device index remains configurable. There is no manual inspection trigger,
-ESP button listener, mask picker or inspection ROI editor.
+The existing single-camera acquisition, rotation, lens calibration and saved
+measurement-plane setup remain in use. Automatic inspection has no Roboflow
+request, API key, manual mask selection or fixed inspection crops.
 
 ## Operator cycle
 
-1. A hand enters, then leaves. Consecutive hand samples debounce presence.
-2. After the configured absence interval, that exact frame is classified.
-3. `full_fabric` and `half_fabric` above the confidence threshold proceed.
-4. The original snapshot is corrected with the existing lens calibration.
-5. Segmentation receives the **undistorted** image and returns full-frame polygons.
-6. Each of up to four fabrics is measured separately using the existing strip
-   skeleton, centreline, ten-segment widths, metric conversion and tolerance rules.
+1. A hand appears and leaves. Three fresh agreeing samples debounce presence;
+   hands must then stay absent for 1 second. A hand-free scene does not retrigger.
+2. Copy that exact camera frame and classify fabric on the original snapshot.
+   `full_fabric` or `half_fabric` at confidence >=0.5 proceeds. Confident `no_fabric`
+   clears the result and pending capture. An uncertain verdict retains the result.
+3. Undistort the accepted snapshot using the existing camera calibration.
+   Missing camera calibration prevents inspection; there is no raw-frame fallback.
+4. Run the local source-region model at aspect-preserving width 1152, with reflected
+   padding to multiples of 32 and ImageNet RGB normalization. One inference pass
+   produces a full-frame mask; threshold 0.5, minimum region area 0.2%, hole filling.
+5. Extract curved boundaries, remove straight backing edges/caps and endpoint
+   hooks (4% endpoint zone, 65 degree hook angle). Keep wave lines with minimum wave
+   ratio 0.008, span 10% of the larger frame dimension, and boundary support 90%.
+6. Sort accepted lines by mean x and inspect only the RIGHTMOST line. Boundary
+   count is not fabric count. No four-line minimum or maximum is imposed.
+7. Offset 100 undistorted-frame pixels into the source-mask interior. Apply CLAHE
+   to source lightness (clip 2, 16x16 tiles), then unfold this curved band horizontally.
+   Unfolded height follows the offset; width follows the band's middle arc length.
+8. Run the local two-class SegFormer at its trained 1024x64 input and resize its
+   mask back to the actual unfolded dimensions. Clean noise/spikes while preserving
+   thickness changes and long missing intervals. Cleanup window 9 and short-gap
+   limit 12 are scaled from model-width pixels; smoothing tolerance is 0.15.
+9. Refold the cleaned mask into the full undistorted frame. Clip to the selected
+   band. Draw adhesive boundaries red and measured centrelines yellow.
+10. Measure each adhesive component with area >=100 pixels using the reference PCA
+    slice centreline, perpendicular recentering, 5-pixel sampling and subpixel
+    boundary intersections. Total length sums separately measured components,
+    without bridging gaps. Width statistics and ten equal pixel arc-length
+    segments describe the LONGEST component, matching the reference workflow.
 
-Full-screen fabric tabs cycle continuously and can also be selected manually.
-Every result replaces the previous tab set with the latest frame's detected
-fabrics: one fabric gives one tab, two give two tabs, up to four. When adding
-fabric one by one, the next accepted trigger inspects all fabric currently in
-view, including pieces left from the previous capture; tabs are not accumulated
-from historical captures and four pieces are never required to begin.
-Zoom, pan, fit and settings remain available. Tabs do not stop hand monitoring.
-`result_view.show_live_preview` controls a small live camera panel beside the
-large measured image. It defaults to `true`. Set it to `false` and restart to
-give the result the full width; background capture and hand monitoring continue
-in either mode. The side preview is not saved into result images.
-Only a confident `no_fabric` verdict after another hand cycle clears the results.
-A low-confidence verdict or inference failure does not claim the table is empty.
-Accepted replacement captures replace the tabs once their results are ready.
-An accepted capture with no strip detections shows a warning and removes old tabs.
+This is the in-memory method from `anotate_main_line/live_inspection.py`; CLI,
+manual-annotation, other camera backends and OBS settings were not imported.
+The reference geometry and both model assets are copied into `inspection/local/`.
+Nothing at runtime depends on that external Desktop folder.
 
-A hand returning invalidates any in-flight result for display. That capture is
-still saved. There is only one segmentation request at a time. A new accepted
-trigger while it is busy retains the latest immutable capture and processes it
-next automatically, without another hand cycle. At most one capture waits;
-a newer hand cycle discards an obsolete waiting capture, and a no-fabric verdict
-cancels it. Empty-table checking remains active. Opening settings pauses and
-resets the hand cycle and cancels any waiting capture.
+## Calibrated measurements and grading
+
+The reference workflow supplies pixels. This application additionally maps the
+refolded centreline and left/right width intersections into millimetres using the
+saved full-frame measurement plane (`plane_scale.load_frame_scale`). It does not
+multiply all distances by a global millimetres-per-pixel estimate. Component
+lengths use the transformed sampled centreline points; small chord discretization
+can make them differ slightly from a scalar conversion of reference pixel length.
+
+PASS requires an available average metric width for EVERY one of the ten segments,
+with each average within the inclusive target +/- tolerance (default 4 +/- 1 mm).
+Any measured out-of-range segment produces FAIL when all segments are available.
+Missing plane calibration or incomplete segment measurements gives UNMEASURED
+and a dashboard WARNING, while pixel results remain available. This grades widths
+on the longest component; it does not introduce a continuity/gap acceptance rule.
+
+## Results and lifecycle
+
+The result viewer shows one selected line, with OVERLAY and MASK views, zoom,
+pan, fit/reset, component/line counts, timing, total length, longest-component
+mean width, and a scrollable ten-segment average/minimum/maximum width table.
+Both pixel and calibrated millimetre values are shown. The optional live side
+preview continues showing current frames; the large result uses the captured
+undistorted frame. Overlay/mask selection is manual; there is no fabric tab timer.
+
+One inspection runs at a time, with at most one replaceable accepted capture
+waiting. A hand returning invalidates unfinished work and cancels an obsolete
+pending capture. Finished obsolete captures are still saved but never displayed.
+Obsolete errors cannot clear a newer result. A completed result stays visible
+until replacement, confident no-fabric, a CURRENT inspection error, or reset.
+Opening settings pauses/resets the trigger and cancels pending work. Camera
+capture and hand monitoring continue during background ONNX inspection; the
+fabric gate runs synchronously in the hand-monitor thread.
 
 ## Configuration
 
-Edit `config.json`, or press **S** during startup to use its settings form.
-Restart after changing JSON. Width, tolerance and tab timing can also be changed
-in the existing inspection-profile UI.
+Press S during startup, or edit `config.json` and restart. The Local Inspection
+settings tab replaces the old segmentation/SAM controls.
 
-| Setting | Default | Purpose |
-|---|---:|---|
-| `auto_trigger.hand_absence_seconds` | 1.0 | Time hands must remain absent after debounce |
-| `auto_trigger.debounce_frames` | 3 | Fresh consistent hand samples before a presence change |
-| `auto_trigger.min_hand_present_seconds` | 0.0 | Minimum presence duration to arm the cycle |
-| `auto_trigger.fabric_min_confidence` | 0.5 | Acceptance and empty-table confidence threshold |
-| `auto_trigger.max_hands` | 2 | Check both hands |
-| `inspection.strip_width_mm` | 4.0 | Common target width |
-| `inspection.strip_width_tolerance_mm` | 1.0 | Common ± tolerance |
-| `inspection.result_display_seconds` | 5.0 | Seconds per tab; tabs loop until fabric removal |
-| `result_view.show_live_preview` | true | Show a small live camera panel beside the result tabs |
-| `sam_detection.strip_segments` | 10 | Existing measurement segment count |
-| `segmentation.provider` | `workflow` | Provider, or `package.module:Factory` for a local implementation |
-| `segmentation.input_width`, `input_height` | 1024, 768 | Workflow input dimensions |
-| `segmentation.timeout_seconds` | 180.0 | Per-attempt workflow timeout |
-| `segmentation.max_retries` | 3 | Reference workflow retry count |
-| `capture_storage.save_rejected_triggers` | false | Save sources before the fabric gate, including rejects/errors/superseded captures |
-| `capture_storage.max_sets` | 1000 | Maximum number of capture directories |
-| `capture_storage.jpeg_quality` | 82 | Derived-image JPEG quality |
-| `capture_storage.preview_max_edge` | 1920 | Maximum saved JPEG dimension |
+| Setting | Default | Meaning |
+|---|---|---|
+| `local_inspection.source_model` | `inspection/local/models/strip_unet_resnet34.onnx` | Local source-region weights |
+| `local_inspection.glue_model` | `inspection/local/models/segformer_b0.onnx` | Local unfolded adhesive weights |
+| `local_inspection.source_width` | 1152 | Aspect-preserving source AI width |
+| `local_inspection.offset_pixels` | 100.0 | Inward band width in full undistorted-frame pixels |
+| `auto_trigger.hand_absence_seconds` | 1.0 | Quiet period after debounced hand absence |
+| `auto_trigger.debounce_frames` | 3 | Consistent fresh samples per presence change |
+| `auto_trigger.fabric_min_confidence` | 0.5 | Fabric acceptance and empty-table confidence |
+| `inspection.strip_width_mm` | 4.0 | Target width for the new measurements |
+| `inspection.strip_width_tolerance_mm` | 1.0 | Allowed +/- width tolerance |
+| `result_view.show_live_preview` | true | Small live camera panel beside results |
+| `capture_storage.save_rejected_triggers` | false | Preserve sources for rejected/error triggers too |
+| `capture_storage.max_sets` | 1000 | Whole capture sets retained |
 
-Some legacy JSON sections remain for shared calibration/configuration compatibility
-but are hidden from the automatic startup form. `serial`, `crop_setup`,
-`color_mask`, `region_homography`, and old SAM prompt/crop-upload controls do not
-drive automatic inspection. Millimetres use the saved full measurement plane;
-missing calibration is reported as unmeasured, never as a passing inspection.
-
-## Where to modify future versions
-
-- `auto_trigger/checkpoint.py`: hand-cycle timing and debounce, derived from the reference.
-- `auto_trigger/models.py`: hand inference and accepted fabric classes.
-- `auto_trigger/fabric_check.py`: reference H5 loading and 224×224 input preparation.
-- `auto_trigger/controller.py`: events, snapshots, background processing and result invalidation.
-- `segmentation/provider.py`: workflow-specific preprocessing and polygon mapping.
-- `segmentation/workflow/`: locally copied transport, retry and response parsing.
-- `inspection/measurement.py`: per-fabric use of the existing measurement method.
-- `inspection/result_view.py`: tab presentation; `inspection/dashboard.py`: UI integration.
-- `inspection/storage.py`: source/derived image formats and capture-set retention.
-
-### Local model contract
-
-Implement a class with `__init__(settings)` and `segment(frame_bgr)`.
-Return `segmentation.SegmentationResult(instances, (width, height))`.
-Each `segmentation.Instance` supplies an N×2 polygon, confidence, label and
-optional fabric box `(x1, y1, x2, y2)`, all in the **input frame's pixels**.
-One fabric has one continuous strip. A mask-producing model can use
-`segmentation.mask_to_polygons` after resizing its mask back to input size.
-All preprocessing, resizing, model loading, inference and postprocessing belong
-inside the provider. Never return resized-model coordinates to the caller.
-
-Set `segmentation.provider` to `segmentation.local_model:LocalSegmenter` when
-that implementation exists. No local segmentation weights are supplied here;
-the default provider uses the reference Roboflow `custom-workflow`, with the
-existing root `.env` or `ROBOFLOW_API_KEY` environment variable.
+Model paths are relative to the application source folder (absolute paths are also
+accepted). Calibration/capture paths use the existing Documents data root.
+Legacy `segmentation`, `sam_detection`, crop, serial and tab-timing configuration
+is retained for old helpers/compatibility but does not drive this inspection.
+The reference filter, preprocessing, cleanup and measurement constants are in
+`inspection/local/`; changing them changes the reference recipe.
 
 ## Saved data
 
-Data follows the existing application storage root: Windows Documents / `data files`.
-The default relative directory is `Dataset_capture/Automatic`.
+Each processed accepted snapshot uses a timestamped directory under Windows
+Documents / `data files/Dataset_capture/Automatic`:
 
 ```text
-Automatic/
-  YYYYMMDD_HHMMSS_microseconds_uniqueid/
-    .inspection-set
-    capture.json       # timestamp, frame sequence, gate scores and target settings
-    original.png       # full-resolution camera snapshot, existing rotation applied
-    undistorted.png    # full-resolution lens-corrected version of that same snapshot
-    overview.jpg       # compact full-frame result
-    fabric_01.jpg      # annotated individual fabric (up to fabric_04.jpg)
-    result.json        # frame polygons, per-segment measurements, warnings/errors
+.inspection-set
+capture.json       # trigger frame sequence, timestamp, fabric verdict, profile
+original.png       # full-resolution snapshot with configured camera rotation
+undistorted.png    # corrected version of the SAME snapshot
+mask.png           # lossless full-resolution refolded adhesive mask
+overlay.png        # lossless full-resolution boundary/centreline overlay
+overview.jpg       # compact preview
+result.json        # processing status, settings, global-frame samples,
+                   # selected boundary, component lengths, px/mm widths and grades
 ```
 
-By default rejected gates produce no files. With `save_rejected_triggers=true`,
-sources are saved before classification, so errors also remain inspectable.
-If camera calibration is missing, only the original can be saved; there is no
-fabricated undistorted image. Rejected/error/superseded sets count toward retention.
-Derived images are JPEG previews; original polygon coordinates and numerical
-measurements are preserved in JSON independently of preview scaling.
+An error still saves the source pair and error metadata. No intermediate source
+masks, unfolding maps or temporary images are written during normal inspection.
+Retained sets include superseded/error captures. Retention preserves in-flight
+sets and deletes only completed recognized sets using the existing safe policy.
+This app automatically saves captures/results; the reference app's manual-only
+save policy has deliberately not replaced that behavior.
 
-Retention reserves capacity before the next set, deleting oldest **completed**
-sets together, including all their files. It only deletes recognized directories
-with this application's marker and refuses links/unexpected subdirectories.
-In-flight sets are protected. If a very small limit leaves no free slot because
-another set is in flight, saving reports an error rather than exceeding the limit.
-After a restart interrupted sets are marked interrupted and become eligible for
-normal oldest-first retention. Do not run two application instances against the
-same capture directory. Closing during a capture can leave such an interrupted set.
+## Dependencies and verification
 
-## Environment and verification
+The two copied models use CPU ONNX Runtime 1.30.0, listed in `requirements.txt`.
+The working runtime was copied from the reference into this project's `.venv`;
+models load once in the background when the automatic controller starts. Hand
+and H5 fabric models still use existing MediaPipe/TensorFlow dependencies.
 
-Python 3.12.10, NumPy 2.2.6, MediaPipe 1.0.1, TensorFlow/tf-keras 2.21.0,
-OpenCV 4.12.0.88, inference-sdk 1.7.1. Both OpenCV distributions are pinned to
-the same build because the SDK and MediaPipe request different distribution names.
-The project `.venv` contains the installed dependencies; no reference environment
-or reference source files are modified. Virtual environments are not copied.
+Run with the project interpreter:
 
-Run `python -m unittest discover -s tests -p "test_*.py"` and
-`python tests/verify_automatic_ui.py` using this project's interpreter.
-Tests cover source retention, camera acquisition, calibration, polygon mapping,
-four-strip measurement, classification gates and late-result suppression.
-The UI smoke test uses synthetic fabrics and never opens a camera or calls SAM.
+```text
+python -m unittest discover -s tests -p "test_*.py"
+python tests/verify_automatic_ui.py
+python tests/verify_startup_settings.py
+python tests/verify_local_models.py --reference PATH_TO_REFERENCE --image IMAGE
+```
 
-Physical millimetre accuracy and the full/half/empty classifier must still be
-checked on the installed camera and representative 1–4-fabric arrangements.
-The copied classifier classified a synthetic black image as `half_fabric`; its
-predictions are not proof of correct empty-table detection on a new background.
-Disconnected strip fragments or more than four strip predictions are reported
-instead of silently choosing one fragment or discarding extra fabrics.
+The last check uses actual copied ONNX models and compares full-size masks,
+overlays, line selection, components, pixel lengths and width segments against
+the reference on exactly the same image. The reference argument is needed only
+for this developer comparison, never for application startup or inspection.
+
+Tests cover rightmost selection, full-frame refolding, component gaps, metric
+endpoint conversion, missing calibration/segments, lossless storage, trigger
+queues, stale results/errors, and the result/settings UI. Physical hand/fabric
+triggering and millimetre accuracy must still be verified with representative
+fabrics on the installed camera and calibrated measurement surface.

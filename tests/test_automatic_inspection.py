@@ -151,7 +151,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = CaptureStore(directory, CONFIG['capture_storage'])
             class Broken:
-                def segment(self, frame):
+                def run(self, frame, progress):
                     raise RuntimeError('workflow offline')
             pipeline = InspectionPipeline(Broken(), store, CONFIG)
             frame = np.zeros((40, 60, 3), np.uint8)

@@ -17,10 +17,13 @@ numpy==2.2.6
 opencv-python==4.12.0.88
 Pillow==12.3.0
 
+# Local source-region and unfolded adhesive models (automatic inspection).
+onnxruntime==1.30.0
+
 # Camera/Arduino serial communication
 pyserial==3.5
 
-# SAM3 object detection over the Roboflow serverless workflow (sam_detection.py).
+# Legacy standalone SAM utilities only; automatic inspection is fully local ONNX.
 # Pulls in supervision, aiohttp, matplotlib and av.
 inference-sdk==1.7.1
 

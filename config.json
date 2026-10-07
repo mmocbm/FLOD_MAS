@@ -227,5 +227,11 @@
     "max_sets": 1000,
     "jpeg_quality": 82,
     "preview_max_edge": 1920
+  },
+  "local_inspection": {
+    "source_model": "inspection/local/models/strip_unet_resnet34.onnx",
+    "glue_model": "inspection/local/models/segformer_b0.onnx",
+    "source_width": 1152,
+    "offset_pixels": 100.0
   }
 }
