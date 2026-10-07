@@ -67,8 +67,10 @@ capture keeps the percentage that was active when captured.
 PASS requires an available average metric width for every segment of every component,
 with each average within the inclusive target +/- tolerance (default 4 +/- 1 mm).
 Any measured out-of-range segment produces FAIL when all segments are available.
-Missing plane calibration or incomplete segment measurements gives UNMEASURED
-and a dashboard WARNING, while pixel results remain available. Every displayed
+A segment with no measurement of its own, and missing plane calibration or other
+incomplete segment measurements, give WARNING instead: the unmeasured segment is
+drawn in the warning colour and labelled WARNING at its own position, and no PASS
+or FAIL is shown for that fabric. Pixel results remain available. Every displayed
 component is graded; this does not introduce a continuity/gap acceptance rule.
 
 ## Results and lifecycle
@@ -184,3 +186,12 @@ endpoint conversion, missing calibration/segments, lossless storage, trigger
 FIFO queues, pause, duplicate-ID markers, delayed reset, and the result/settings UI. Physical hand/fabric
 triggering and millimetre accuracy must still be verified with representative
 fabrics on the installed camera and calibrated measurement surface.
+
+
+Capture preparation runs on a separate fabric-check worker. Hand/bed monitoring
+continues while fabric classification, undistortion, saving, or inspection is busy.
+Hand cycles retain their own frame and profile snapshots and enter the preparation
+queue in order; accepted captures then enter the inspection FIFO. Pause stops new
+triggers while already captured work drains. The persistent queue bar shows captures
+checking (including waiting for the fabric worker), waiting for inspection, and
+currently inspecting, including while results are displayed.

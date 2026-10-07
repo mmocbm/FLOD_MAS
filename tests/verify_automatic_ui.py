@@ -30,6 +30,11 @@ def main():
     for index in range(6):
         app._show_automatic_results(result)
         root.update()
+        assert app.inspection_queue_label.winfo_ismapped()
+        app.auto_controller.preparing_count = 2
+        app._poll_automatic()
+        assert '2 checking' in app.inspection_queue_label.cget('text')
+        app.auto_controller.preparing_count = 0
         view = app.result_view
         assert len(view.records) == index+1 and len(view._tabs) == index+1
         assert view._active == index

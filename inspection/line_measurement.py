@@ -56,7 +56,10 @@ def measurement_record(result, scale, target_width, tolerance, end_exclusion_per
     pixel_widths = [s['width_px'] for s in main['samples'] if s['valid']]
     graded = [s['within_tolerance'] for component in components for s in component['segments']]
     metric = scale is not None and bool(widths)
-    status = ('UNMEASURED' if not metric or any(s is None for s in graded)
+    # A segment that could not be measured is reported as WARNING, naming no
+    # verdict of its own. PASS/FAIL are reserved for fabrics whose every segment
+    # was actually graded, so an ungradeable segment can never read as a failure.
+    status = ('WARNING' if not metric or any(s is None for s in graded)
               else 'PASS' if all(graded) else 'FAIL')
     return dict(status=status, metric=metric,
                 line_count=result['line_count'], selected_line=result['selected_line'],

@@ -39,6 +39,9 @@ class AutoController(threading.Thread):
         self.marker_monitor = None
         self.pipeline = None
         self.gate_busy = False
+        self.capture_jobs = queue.Queue()
+        self.prepared_jobs = queue.SimpleQueue()
+        self.preparing_count = 0
         self.job_generation = -1
         self.last_status = None
         # Latest preview geometry, read by the Tk thread. The whole snapshot is
@@ -70,7 +73,8 @@ class AutoController(threading.Thread):
         self.wake.set()
 
     def stop(self):
-        self.stopped.set()
+        with self.lock:
+            self.stopped.set()
         self.wake.set()
 
     def poll(self):
@@ -92,6 +96,30 @@ class AutoController(threading.Thread):
         self.presence = Debouncer(self.settings['debounce_frames'])
 
     def _complete(self):
+        while True:
+            try:
+                job = self.prepared_jobs.get_nowait()
+            except queue.Empty:
+                break
+            self.preparing_count -= 1
+            self.gate_busy = self.preparing_count > 0
+            if job is not None:
+                if job['epoch'] != self.epoch or job['generation'] != self.generation or not self.active:
+                    self._cancel_job(job, 'cancelled')
+                    continue
+                # Choose from accepted work, so a rejected earlier fabric check
+                # cannot make the first real inspection skip other lines.
+                job['metadata']['line_selection'] = (
+                    'all' if not self.has_results and not self.busy_except_gate()
+                    else self.config['local_inspection'].get('subsequent_line', 'rightmost'))
+                self.pending_jobs.append(job)
+        if self.future is None and self.pending_jobs and self.active and not self.stopped.is_set():
+            if (self.pending_jobs[0]['generation'] == self.generation
+                    and self.pending_jobs[0]['epoch'] == self.epoch):
+                self._start_job(self.pending_jobs.popleft())
+            else:
+                self._discard_pending('cancelled')
+        self._check_reset_ready()
         if self.future is None or not self.future.done():
             return
         future, self.future = self.future, None
@@ -159,14 +187,16 @@ class AutoController(threading.Thread):
             self.reset_ready = True
             self.events.put(('reset_ready', self.generation, None))
 
+    def _cancel_job(self, job, status):
+        if job['path'] is not None:
+            try:
+                self.pipeline.store.finish(job['path'], {'status': status, 'capture': job['metadata']})
+            except OSError as error:
+                self.events.put(('error', job['generation'], str(error)))
+
     def _discard_pending(self, status):
         while self.pending_jobs:
-            job = self.pending_jobs.popleft()
-            if job['path'] is not None:
-                try:
-                    self.pipeline.store.finish(job['path'], {'status': status, 'capture': job['metadata']})
-                except OSError as error:
-                    self.events.put(('error', self.generation, str(error)))
+            self._cancel_job(self.pending_jobs.popleft(), status)
 
     def _start_job(self, job):
         self._status('Inspecting captured fabric…')
@@ -175,6 +205,8 @@ class AutoController(threading.Thread):
 
         def process(future):
             try:
+                if job['path'] is not None:
+                    self.pipeline.store.update_metadata(job['path'], job['metadata'])
                 def publish(result):
                     if job['generation'] == self.generation and not self.stopped.is_set():
                         self.has_results = True
@@ -197,6 +229,66 @@ class AutoController(threading.Thread):
         threading.Thread(target=process, args=(self.future,),
                          name='automatic-inspection', daemon=True).start()
 
+    @property
+    def queue_text(self):
+        return (f"Queue: {self.preparing_count} checking | "
+                f"{len(self.pending_jobs)} waiting | "
+                f"{int(self.future is not None)} inspecting")
+
+    def _prepare_capture(self, gate, item):
+        original, sequence, undistorter, profile, item_epoch, trigger_generation, metadata = item
+        pipeline = self.pipeline
+        capture_path = None
+        try:
+            if item_epoch != self.epoch or not self.active or self.stopped.is_set():
+                return None
+            corrected = None
+            if self.config['capture_storage']['save_rejected_triggers']:
+                corrected = undistorter.undistort(original) if undistorter else None
+                capture_path = pipeline.store.begin(original, corrected, metadata)
+            verdict = gate.classify(original)
+            metadata['fabric'] = verdict
+            if capture_path is not None:
+                pipeline.store.update_metadata(capture_path, metadata)
+            if item_epoch != self.epoch or not self.active or self.stopped.is_set():
+                if capture_path is not None:
+                    pipeline.store.finish(capture_path, {'status': 'cancelled', 'capture': metadata})
+                return None
+            if not verdict['accepted']:
+                if capture_path is not None:
+                    pipeline.store.finish(capture_path, {'status': 'rejected', 'capture': metadata})
+                self._status(f"Fabric check: {verdict['label']} ({verdict['confidence']:.0%})")
+                return None
+            if undistorter is None:
+                raise RuntimeError('Camera calibration is required before automatic measurement')
+            if corrected is None:
+                corrected = undistorter.undistort(original)
+            job = {'original': original, 'corrected': corrected, 'metadata': metadata,
+                   'profile': profile, 'path': capture_path, 'generation': trigger_generation,
+                   'epoch': item_epoch}
+            return job
+        except Exception as error:
+            if capture_path is not None:
+                try:
+                    pipeline.store.finish(capture_path, {'status': 'error', 'error': str(error)})
+                except OSError:
+                    pass
+            self.events.put(('error', trigger_generation, str(error)))
+            return None
+
+    def _capture_worker(self, gate):
+        while True:
+            item = self.capture_jobs.get()
+            if item is None:
+                return
+            job = self._prepare_capture(gate, item)
+            with self.lock:
+                if job is not None and self.stopped.is_set():
+                    self._cancel_job(job, 'cancelled')
+                else:
+                    self.prepared_jobs.put(job)
+            self.wake.set()
+
     def run(self):
         hand = None
         try:
@@ -208,6 +300,8 @@ class AutoController(threading.Thread):
             if self.stopped.is_set():
                 return
             self.pipeline = pipeline = self.pipeline_factory()
+            threading.Thread(target=self._capture_worker, args=(gate,),
+                             name='automatic-fabric-check', daemon=True).start()
             self._reset_checkpoint()
             last_seq, epoch = None, self.epoch
             pause_revision = self.pause_revision
@@ -270,12 +364,11 @@ class AutoController(threading.Thread):
                             self._status('Hands clear — confirming absence…')
                         continue
                     self._status('Checking fabric…')
-                    self.gate_busy = True
                     trigger_generation = self.generation
                     # The hand result, fabric verdict, saved raw image and
                     # undistortion all refer to this exact immutable snapshot.
                     original = raw.copy()
-                    selection = ('all' if not self.has_results and not self.busy_except_gate()
+                    selection = ('all' if not self.has_results and not self.busy
                                  else self.config['local_inspection'].get('subsequent_line', 'rightmost'))
                     metadata = {'line_selection': selection, 'triggered_at': datetime.now().astimezone().isoformat(),
                                 'frame_sequence': sequence, 'fabric': None,
@@ -283,35 +376,10 @@ class AutoController(threading.Thread):
                                     self.config['inspection'].get('end_exclusion_percent', 5.0)),
                                 'size': profile['size'], 'target_width_mm': profile['width'],
                                 'tolerance_mm': profile['tolerance']}
-                    corrected = None
-                    if self.config['capture_storage']['save_rejected_triggers']:
-                        corrected = undistorter.undistort(original) if undistorter else None
-                        capture_path = pipeline.store.begin(original, corrected, metadata)
-                    verdict = gate.classify(original)
-                    metadata['fabric'] = verdict
-                    if capture_path is not None:
-                        pipeline.store.update_metadata(capture_path, metadata)
-                    if item_epoch != self.epoch or not self.active or self.paused:
-                        if capture_path is not None:
-                            pipeline.store.finish(capture_path, {'status': 'cancelled', 'capture': metadata})
-                        continue
-                    if not verdict['accepted']:
-                        if capture_path is not None:
-                            pipeline.store.finish(capture_path, {'status': 'rejected', 'capture': metadata})
-                        self._status(f"Fabric check: {verdict['label']} ({verdict['confidence']:.0%})")
-                        continue
-                    if undistorter is None:
-                        raise RuntimeError('Camera calibration is required before automatic measurement')
-                    if corrected is None:
-                        corrected = undistorter.undistort(original)
-                    job = {'original': original, 'corrected': corrected, 'metadata': metadata,
-                           'profile': profile, 'path': capture_path, 'generation': trigger_generation,
-                           'epoch': item_epoch}
-                    if self.future is not None:
-                        self.pending_jobs.append(job)
-                        self._status(f'Capture queued — {len(self.pending_jobs)} waiting')
-                    else:
-                        self._start_job(job)
+                    self.preparing_count += 1
+                    self.gate_busy = True
+                    self.capture_jobs.put((original, sequence, undistorter, dict(profile),
+                                           item_epoch, trigger_generation, metadata))
                 except Exception as error:
                     if capture_path is not None:
                         try:
@@ -320,11 +388,19 @@ class AutoController(threading.Thread):
                             pass
                     self._reset_checkpoint()
                     self.events.put(('error', self.generation, str(error)))
-                finally:
-                    self.gate_busy = False
         except Exception as error:
             self.events.put(('error', self.generation, f'Automatic inspection unavailable: {error}'))
         finally:
+            with self.lock:
+                self.stopped.set()
+                while True:
+                    try:
+                        job = self.prepared_jobs.get_nowait()
+                    except queue.Empty:
+                        break
+                    if job is not None:
+                        self._cancel_job(job, 'cancelled')
+            self.capture_jobs.put(None)
             self._discard_pending('cancelled')
             if hand is not None:
                 hand.close()

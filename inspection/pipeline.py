@@ -23,7 +23,7 @@ class InspectionPipeline:
                 warnings.append(f'Millimetre calibration unavailable: {error}')
             measurement = measurement_record(result, scale, target_width, tolerance,
                     metadata.get('end_exclusion_percent', self.config['inspection'].get('end_exclusion_percent', 5.0)))
-            if measurement['status'] == 'UNMEASURED':
+            if measurement['status'] == 'WARNING':
                 warnings.append('Pixel measurements available; calibrated widths incomplete or unavailable')
             self.store.save_mask(path, result['mask'])
             self.store.save_overlay(path, result['overlay'])
@@ -72,7 +72,7 @@ class InspectionPipeline:
                 self.store.finish(line_path, {'status': 'complete', 'measurement': measurement})
                 record['lines'].append(measurement)
                 line_warnings = list(warnings)
-                if measurement['status'] == 'UNMEASURED':
+                if measurement['status'] == 'WARNING':
                     line_warnings.append('Calibrated widths incomplete or unavailable')
                 on_result({'measurement': measurement, 'overlay': overlay, 'mask': result['mask'],
                            'warnings': line_warnings, 'path': str(line_path)})

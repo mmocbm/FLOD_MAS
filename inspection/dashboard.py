@@ -63,6 +63,9 @@ class AutomaticDashboard:
             elif event == 'status':
                 if active and generation == controller.generation:
                     self.update_progress(100, payload)
+        queue_label = getattr(self, 'inspection_queue_label', None)
+        if queue_label is not None:
+            queue_label.configure(text=controller.queue_text)
         if controller.reset_requested:
             self.update_progress(100, 'Waiting for inspection results…' if self._reset_due is None
                                  else 'Results complete — returning to live…')

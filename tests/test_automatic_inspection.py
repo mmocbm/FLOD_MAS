@@ -255,6 +255,61 @@ class ControllerTests(unittest.TestCase):
             controller.stop()
             controller.join(2)
 
+    def test_slow_fabric_check_keeps_hand_monitor_running_and_preserves_fifo(self):
+        cfg = copy.deepcopy(CONFIG)
+        cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)
+        cfg['capture_storage']['save_rejected_triggers'] = False
+        checking, release = threading.Event(), threading.Event()
+        processed, detected = [], []
+        class Hand:
+            def __init__(self, settings): pass
+            def present(self, frame):
+                detected.append(int(frame[0, 0, 1]))
+                return bool(frame[0, 0, 0])
+            def close(self): pass
+        class Gate:
+            def __init__(self, settings): pass
+            def classify(self, frame):
+                checking.set()
+                release.wait(4)
+                return {'accepted': True, 'label': 'full_fabric', 'confidence': .99}
+        class Pipeline:
+            def run(self, original, *args):
+                processed.append(int(original[0, 0, 1]))
+                return {'fabrics': []}
+        controller = AutoController(cfg, Pipeline, Hand, Gate)
+        controller.start()
+        sequence = 0
+        def feed(present, identity):
+            nonlocal sequence
+            sequence += 1
+            frame = np.zeros((20, 20, 3), np.uint8)
+            frame[:, :, 0], frame[:, :, 1] = present, identity
+            controller.submit(frame, sequence, SimpleNamespace(undistort=lambda f: f.copy()),
+                              {'size': 'M', 'width': 4, 'tolerance': 1})
+            time.sleep(.09)
+        try:
+            for value in (True, False, False): feed(value, 1)
+            self.assertTrue(checking.wait(2))
+            for value in (True, True, False, False): feed(value, 2)
+            self.assertIn(2, detected)
+            self.assertEqual(controller.preparing_count, 2)
+            self.assertIn('2 checking', controller.queue_text)
+            controller.set_paused(True)
+            release.set()
+            deadline = time.monotonic() + 2
+            while len(processed) < 2 and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertEqual(processed, [1, 2])
+            deadline = time.monotonic() + 2
+            while controller.busy and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertEqual(controller.queue_text, 'Queue: 0 checking | 0 waiting | 0 inspecting')
+        finally:
+            release.set()
+            controller.stop()
+            controller.join(2)
+
     def test_save_all_keeps_sources_when_classifier_fails(self):
         cfg = copy.deepcopy(CONFIG)
         cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)

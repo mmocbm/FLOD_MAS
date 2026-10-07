@@ -196,6 +196,10 @@ class IndustrialDashboard(AutomaticDashboard):
             self.title_bar, "", self._toggle_overlays, role="secondary", padx=16, pady=6)
         self.overlay_button.pack(side=tk.RIGHT, fill=tk.Y)
         self._refresh_overlay_button()
+        self.inspection_queue_label = tk.Label(
+            self.root, text="Queue: 0 checking | 0 waiting | 0 inspecting",
+            bg=C["surface"], fg=C["text"], font=(FONT, 10), anchor="w", padx=16)
+        self.inspection_queue_label.pack(side=tk.TOP, fill=tk.X)
         self.title_bar.bind("<ButtonPress-1>", self._start_move)
         self.title_bar.bind("<B1-Motion>", self._do_move)
 

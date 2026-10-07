@@ -43,6 +43,8 @@ def annotated_overlay(image, measurement, mask=None):
             samples = [s for s in component['samples'] if s['segment'] == segment['segment']]
             if not samples:
                 continue
+            # None means this segment had no measurement to grade, so it is
+            # marked WARNING at the segment itself rather than pass or fail.
             grade = segment['within_tolerance']
             color = (40, 40, 240) if grade is False else (60, 210, 60) if grade else (0, 190, 255)
             points = np.rint([[s['center_x'], s['center_y']] for s in samples]).astype(np.int32)
@@ -58,7 +60,7 @@ def annotated_overlay(image, measurement, mask=None):
             width = segment['average_width_mm']
             pixels = segment['average_width_px']
             label = (f'{width:.2f} mm' if width is not None else
-                     f'{pixels:.1f} px' if pixels is not None else 'Unmeasured')
+                     f'{pixels:.1f} px' if pixels is not None else 'WARNING')
             x, y = points[len(points)//2]
             x = max(2, min(int(x)+14, overlay.shape[1]-130))
             y = max(20, min(int(y), overlay.shape[0]-8))

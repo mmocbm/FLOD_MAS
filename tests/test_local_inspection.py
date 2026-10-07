@@ -101,17 +101,36 @@ class CalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(sample['width_mm'], np.linalg.norm(endpoints[1]-endpoints[0]))
         self.assertLess(sample['width_mm'], 10)
 
-    def test_missing_calibration_or_missing_segment_never_passes(self):
+    def test_missing_calibration_or_missing_segment_warns_instead_of_grading(self):
         _, _, result = synthetic_inspection()
         record = measurement_record(result, None, 4, 1)
-        self.assertEqual(record['status'], 'UNMEASURED')
+        # No plane means nothing could be graded, so the fabric warns rather than
+        # being called a failure it was never measured against.
+        self.assertEqual(record['status'], 'WARNING')
         self.assertFalse(record['metric'])
         self.assertIsNone(record['length_mm'])
         for sample in result['components'][0]['samples']:
             if sample['segment'] == 1:
                 sample['valid'] = False
         scale = PlaneScale(np.diag([.1, .1, 1]), .1)
-        self.assertEqual(measurement_record(result, scale, 3, 2)['status'], 'UNMEASURED')
+        self.assertEqual(measurement_record(result, scale, 3, 2)['status'], 'WARNING')
+
+    def test_one_ungradeable_segment_warns_even_when_the_rest_are_out_of_tolerance(self):
+        _, _, result = synthetic_inspection()
+        scale = PlaneScale(np.diag([.1, .1, 1]), .1)
+        # Every measured segment is out of tolerance against a 10 mm target, so
+        # this would be FAIL -- except segment 1 of the main component loses its
+        # samples, and the missing measurement decides the label instead.
+        for sample in result['components'][0]['samples']:
+            if sample['segment'] == 1:
+                sample['valid'] = False
+        record = measurement_record(result, scale, 10, .2)
+        self.assertEqual(record['status'], 'WARNING')
+        # The segments that were measurable still carry their own verdicts.
+        graded = {s['segment']: s['within_tolerance']
+                  for s in record['components'][0]['segments']}
+        self.assertIsNone(graded[1])
+        self.assertIn(False, [value for key, value in graded.items() if key != 1])
 
 
 class LocalPipelineTests(unittest.TestCase):
@@ -143,7 +162,7 @@ class LocalPipelineTests(unittest.TestCase):
             with patch('inspection.pipeline.plane_scale.load_frame_scale', side_effect=PlaneScaleError('missing')):
                 result = pipeline.run(frame, frame, {}, 4, 1)
             self.assertTrue(result['warnings'])
-            self.assertEqual(result['measurement']['status'], 'UNMEASURED')
+            self.assertEqual(result['measurement']['status'], 'WARNING')
 
     def test_invalid_local_settings_are_rejected(self):
         for key, value in [('offset_pixels',0), ('offset_pixels',float('nan')),

@@ -111,8 +111,12 @@ class FabricResultView(CropResultView):
                      f"  ·  Average width {measurement['average_width_mm']:.2f} mm"
                      f"  ·  Target {measurement['target_width_mm']:g} ± "
                      f"{measurement['width_tolerance_mm']:g} mm\n")
-            text += '    '.join(f"{s['index']}: {s['average_width_mm']:.2f} mm"
-                                for s in measurement['segments'])
+            # A segment with no width of its own is named WARNING here too, so a
+            # gap in the summary reads as one, not as "0.00 mm".
+            text += '    '.join(
+                f"{s['index']}: " + ('WARNING' if s['average_width_mm'] is None
+                                     else f"{s['average_width_mm']:.2f} mm")
+                for s in measurement['segments'])
         else:
             text += '  ·  Millimetre measurement unavailable — check calibration/segmentation'
         self.summary.configure(text=text)
