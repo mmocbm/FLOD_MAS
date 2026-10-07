@@ -93,8 +93,10 @@ class CaptureStore:
                 resolved = path.resolve()
                 if resolved.parent != self.root or path.is_symlink() or path.is_junction():
                     raise OSError('Capture retention target escaped its storage directory')
-                # Reject nested links too; generated sets contain only ordinary files.
-                if any(p.is_symlink() or p.is_junction() or p.is_dir() for p in path.iterdir()):
+                # Allow generated line folders, but reject links and unexpected subdirectories.
+                if any(p.is_symlink() or p.is_junction() or
+                       (p.is_dir() and (p.parent != path or not re.fullmatch(r'line_\d+', p.name)))
+                       for p in path.rglob('*')):
                     raise OSError(f'Unexpected content in capture set {path.name}')
                 shutil.rmtree(resolved)
                 remove_count -= 1

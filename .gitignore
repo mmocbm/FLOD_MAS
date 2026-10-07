@@ -44,3 +44,5 @@ tests/local_inspection_preview.jpg
 build/
 dist/
 *.egg-info/
+
+tests/end_exclusion_profile.png

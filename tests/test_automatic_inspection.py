@@ -39,18 +39,23 @@ class TriggerTests(unittest.TestCase):
         self.assertTrue(checkpoint.update(False, 7.5))
         self.assertFalse(checkpoint.update(False, 8))
 
-    def test_half_and_full_accepted_but_low_confidence_empty_does_not_clear(self):
+    def test_two_class_gate_uses_strict_comparison_including_ties(self):
         gate = FabricGate.__new__(FabricGate)
         gate.settings = CONFIG['auto_trigger']
-        gate.labels = ['full_fabric', 'half_fabric', 'no_fabric']
+        gate.labels = ['full_fabric', 'no_fabric']
         frame = np.zeros((32, 32, 3), np.uint8)
-        for scores, accepted, empty in [([.9, .05, .05], True, False),
-                                        ([.05, .9, .05], True, False),
-                                        ([.05, .05, .9], False, True),
-                                        ([.3, .3, .4], False, False)]:
+        for scores, accepted, empty in [([.9, .1], True, False),
+                                        ([.5001, .4999], True, False),
+                                        ([.1, .9], False, True),
+                                        ([.5, .5], False, False),
+                                        ([.4, .3], True, False)]:
             gate.model = lambda *args, s=scores, **kwargs: np.array([s])
             result = gate.classify(frame)
             self.assertEqual((result['accepted'], result['empty']), (accepted, empty))
+        for scores in ([.5], [.2, .3, .5], [float('nan'), .5]):
+            gate.model = lambda *args, s=scores, **kwargs: np.array([s])
+            with self.assertRaises(ValueError):
+                gate.classify(frame)
 
 
 class SegmentationTests(unittest.TestCase):
@@ -192,6 +197,7 @@ class ControllerTests(unittest.TestCase):
         cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)
         started, release = threading.Event(), threading.Event()
         processed = []
+        selections = []
         class Hand:
             def __init__(self, settings): pass
             def present(self, frame): return bool(frame[0,0,0])
@@ -199,11 +205,12 @@ class ControllerTests(unittest.TestCase):
         class Gate:
             def __init__(self, settings): pass
             def classify(self, frame):
-                return {'accepted': True, 'empty': False, 'label': 'half_fabric', 'confidence': .99}
+                return {'accepted': True, 'empty': False, 'label': 'full_fabric', 'confidence': .99}
         class Pipeline:
             def run(self, original, *args):
                 count = int(original[0,0,1])
                 processed.append(count)
+                selections.append(args[1]['line_selection'])
                 if len(processed) == 1:
                     started.set()
                     release.wait(4)
@@ -222,18 +229,24 @@ class ControllerTests(unittest.TestCase):
         try:
             for present in (True, False, False): feed(present, 1)
             self.assertTrue(started.wait(2))
+            controller.set_paused(True)
+            time.sleep(.12)
+            for present in (True, True, False, False): feed(present, 9)
+            self.assertFalse(controller.pending_jobs)
+            controller.set_paused(False)
             time.sleep(.12)
             for present in (True, True, False, False): feed(present, 2)
-            self.assertIsNotNone(controller.pending_job)
+            self.assertTrue(controller.pending_jobs)
             self.assertEqual(processed, [1])
             release.set()
             results = []
             deadline = time.monotonic() + 2
-            while time.monotonic() < deadline and not results:
+            while time.monotonic() < deadline and len(results) < 2:
                 results += [payload for event, _, payload in controller.poll() if event == 'result']
                 time.sleep(.02)
             self.assertEqual(processed, [1, 2])
-            self.assertEqual([len(result['fabrics']) for result in results], [2])
+            self.assertEqual(selections, ['all', 'rightmost'])
+            self.assertEqual([len(result['fabrics']) for result in results], [1, 2])
         finally:
             release.set()
             controller.stop()
@@ -273,7 +286,7 @@ class ControllerTests(unittest.TestCase):
                 controller.stop()
                 controller.join(2)
 
-    def test_empty_after_hand_cycle_clears_and_old_work_cannot_restore_tabs(self):
+    def test_empty_fabric_does_not_clear_or_discard_accepted_work(self):
         cfg = copy.deepcopy(CONFIG)
         cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)
         started, release = threading.Event(), threading.Event()
@@ -308,15 +321,15 @@ class ControllerTests(unittest.TestCase):
             # Let the flash end before a new hand cycle.
             time.sleep(.12)
             for value in (True, True, False, False): feed(value)
-            self.assertIsNotNone(controller.pending_job)
+            self.assertTrue(controller.pending_jobs)
             time.sleep(.12)
             for value in (True, True, False, False): feed(value)
             events = list(controller.poll())
-            self.assertIn('clear', [e[0] for e in events])
-            self.assertIsNone(controller.pending_job)
+            self.assertNotIn('clear', [e[0] for e in events])
+            self.assertTrue(controller.pending_jobs)
             release.set()
             time.sleep(.15)
-            self.assertNotIn('result', [e[0] for e in controller.poll()])
+            self.assertEqual(2, sum(e[0] == 'result' for e in controller.poll()))
         finally:
             release.set()
             controller.stop()

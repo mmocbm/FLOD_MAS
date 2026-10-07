@@ -7,6 +7,8 @@ if __name__ == '__main__':
 import tkinter as tk
 from tkinter import ttk, messagebox
 import time
+import math
+import copy
 import subprocess
 from PIL import Image, ImageTk
 import cv2
@@ -88,6 +90,9 @@ class IndustrialDashboard(AutomaticDashboard):
             value=f"{float(CONFIG['inspection']['strip_width_mm']):g}")
         self.strip_width_tolerance_var = tk.StringVar(
             value=f"{float(CONFIG['inspection']['strip_width_tolerance_mm']):g}")
+        self.end_exclusion_var = tk.StringVar(
+            value=f"{float(CONFIG['inspection'].get('end_exclusion_percent', 5.0)):g}")
+        self.active_end_exclusion_percent = float(self.end_exclusion_var.get())
         self.result_display_seconds_var = tk.StringVar(
             value=f"{float(CONFIG['inspection'].get('result_display_seconds', 5.0)):g}")
 
@@ -168,6 +173,9 @@ class IndustrialDashboard(AutomaticDashboard):
                       padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
         themed_button(self.title_bar, "SETTINGS", self.open_settings_selector, role="quiet",
                       padx=16, pady=6).pack(side=tk.RIGHT, fill=tk.Y)
+        self.auto_pause_button = themed_button(
+            self.title_bar, "PAUSE", self._toggle_automatic_pause, role="primary", padx=16, pady=6)
+        self.auto_pause_button.pack(side=tk.RIGHT, fill=tk.Y)
         self.title_bar.bind("<ButtonPress-1>", self._start_move)
         self.title_bar.bind("<B1-Motion>", self._do_move)
 
@@ -355,7 +363,7 @@ class IndustrialDashboard(AutomaticDashboard):
 
 
     def _open_camera_tool(self, page):
-        if self.auto_controller.future is not None or self.auto_controller.gate_busy:
+        if self.auto_controller.busy:
             self._show_error_popup('Wait for the current inspection to finish before changing calibration.')
             return
         self.auto_controller.set_active(False)
@@ -466,7 +474,7 @@ class IndustrialDashboard(AutomaticDashboard):
             font=(FONT, 28, "bold"),
         ).pack(anchor="w")
         tk.Label(
-            content, text="Set adhesive-strip width, tolerance, and fabric tab cycling time.",
+            content, text="Set adhesive width, tolerance, and the glue-line ends to exclude.",
             fg=C["muted"], bg=C["bg"], font=(FONT, 11),
         ).pack(anchor="w", pady=(4, 20))
 
@@ -491,7 +499,7 @@ class IndustrialDashboard(AutomaticDashboard):
         settings.pack(fill=tk.X, pady=14)
         for column in range(2):
             settings.columnconfigure(column, weight=1, uniform="limits")
-        section_label(settings, "Rightmost line inspection limits").grid(
+        section_label(settings, "Glue-line inspection limits").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(17, 12))
 
         label_options = {"fg": C["text_soft"], "bg": C["card"], "font": (FONT, 10, "bold")}
@@ -517,6 +525,17 @@ class IndustrialDashboard(AutomaticDashboard):
         self.strip_width_tolerance_entry.grid(
             row=2, column=1, padx=20, pady=(7, 20), sticky="ew", ipady=8)
 
+        tk.Label(settings, text="Exclude from EACH end (%)", **label_options).grid(
+            row=3, column=0, sticky="w", padx=20)
+        self.end_exclusion_entry = tk.Entry(
+            settings, textvariable=self.end_exclusion_var, bg=C["surface_2"],
+            fg=C["text"], insertbackground=C["text"], font=(FONT, 12),
+            relief=tk.FLAT, highlightthickness=1, highlightbackground=C["border"], justify=tk.CENTER)
+        self.end_exclusion_entry.grid(row=4, column=0, padx=20, pady=(7, 16), sticky="ew", ipady=8)
+        tk.Label(settings, text="5% per end keeps the middle 90%.\n0 disables exclusion; must be below 50%.",
+                 fg=C["muted"], bg=C["card"], font=(FONT, 10), justify=tk.LEFT).grid(
+            row=4, column=1, sticky="w", padx=20)
+
         footer = tk.Frame(content, bg=C["bg"])
         footer.pack(fill=tk.X, pady=(4, 0))
         themed_button(footer, "SAVE PROFILE", self.save_settings,
@@ -531,6 +550,20 @@ class IndustrialDashboard(AutomaticDashboard):
             set_button_role(btn, "selected" if s == size else "secondary")
 
     def save_settings(self):
+        try:
+            trim = float(self.end_exclusion_var.get())
+            if not math.isfinite(trim) or not 0 <= trim < 50:
+                raise ValueError('End exclusion must be at least 0 and less than 50 percent.')
+            from startup_settings import save_config
+            candidate = copy.deepcopy(CONFIG)
+            candidate['inspection']['end_exclusion_percent'] = trim
+            save_config(candidate)
+        except (ValueError, OSError) as error:
+            messagebox.showerror('Settings not saved', str(error), parent=self.size_win)
+            return
+        CONFIG['inspection']['end_exclusion_percent'] = trim
+        self.active_end_exclusion_percent = trim
+        self.end_exclusion_var.set(f'{trim:g}')
         strip_value = self.strip_width_var.get()
         validated_width = self._validate_strip_width(strip_value)
         tolerance_value = self.strip_width_tolerance_var.get()

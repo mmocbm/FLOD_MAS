@@ -1,0 +1,2 @@
+0 full_fabric
+1 no_fabric

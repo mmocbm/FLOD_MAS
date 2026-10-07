@@ -15,16 +15,20 @@ def validate_automatic_config(config):
                 or value < minimum or (maximum is not None and value > maximum)):
             raise ValueError(f'{section}.{key} has an invalid value')
 
+    if 'marker_confirm_seconds' in config['auto_trigger']:
+        number('auto_trigger', 'marker_confirm_seconds', 0.05)
+    if config.get('local_inspection', {}).get('subsequent_line', 'rightmost') not in ('leftmost', 'rightmost'):
+        raise ValueError('local_inspection.subsequent_line must be leftmost or rightmost')
     for key in ('hand_absence_seconds',):
         number('auto_trigger', key, 0.05)
     number('auto_trigger', 'min_hand_present_seconds', 0)
     for key in ('debounce_frames', 'detect_width', 'max_hands'):
         number('auto_trigger', key, 1, integer=True)
-    for key in ('hand_confidence', 'fabric_min_confidence'):
+    for key in ('hand_confidence',):
         number('auto_trigger', key, 0.01, 1)
-    labels = config['auto_trigger']['accepted_labels']
-    if not isinstance(labels, list) or set(labels) != {'full_fabric', 'half_fabric'}:
-        raise ValueError('Automatic fabric gate must accept full_fabric and half_fabric')
+    trim = config.get('inspection', {}).get('end_exclusion_percent', 5.0)
+    if isinstance(trim, bool) or not isinstance(trim, (int, float)) or not math.isfinite(trim) or not 0 <= trim < 50:
+        raise ValueError('inspection.end_exclusion_percent must be at least 0 and less than 50')
     if 'local_inspection' in config:
         number('local_inspection', 'source_width', 32, integer=True)
         number('local_inspection', 'offset_pixels', 0.5)

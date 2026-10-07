@@ -34,7 +34,7 @@ def run():
     root.report_callback_exception = lambda *args: errors.append(args)
     with patch.object(main, 'CameraHandler', FakeCamera), patch.object(main.IndustrialDashboard, '_init_automatic'), patch.object(main.messagebox, 'showwarning') as warning:
         app = main.IndustrialDashboard(root, lambda: None)
-        app.auto_controller = MagicMock(future=None, gate_busy=False)
+        app.auto_controller = MagicMock(future=None, gate_busy=False, busy=False)
         start = time.perf_counter()
         app.start_video_stream()
         assert time.perf_counter() - start < 0.1, 'Camera startup blocked the UI'

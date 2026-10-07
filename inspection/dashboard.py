@@ -1,5 +1,6 @@
 """Tk integration; cameras and calibration remain owned by the existing app."""
 import tkinter as tk
+import time
 from app_config import CONFIG, project_path
 from auto_trigger.controller import AutoController
 from pathlib import Path
@@ -20,6 +21,7 @@ class AutomaticDashboard:
                                        settings['offset_pixels'], settings['source_width'])
             return InspectionPipeline(inspector, store, CONFIG)
         self.auto_controller = AutoController(CONFIG, factory)
+        self._reset_due = None
         self.auto_controller.start()
         self._auto_poll_job = self.root.after(100, self._poll_automatic)
 
@@ -30,11 +32,19 @@ class AutomaticDashboard:
         active = (not self.video_paused and self.video_streaming
                   and getattr(self, 'calibration_page', None) is None)
         controller.set_active(active)
+        if not active:
+            self._reset_due = None
         for event, generation, payload in controller.poll():
             if event == 'result':
                 if generation != controller.generation or not active:
                     continue
                 self._show_automatic_results(payload)
+            elif event == 'reset_wait':
+                if active and generation == controller.generation:
+                    self.update_progress(100, payload)
+            elif event == 'reset_ready':
+                if active and generation == controller.generation:
+                    self._reset_due = time.monotonic() + 2.0
             elif event == 'clear':
                 if active and generation == controller.generation:
                     self._dismiss_result_view()
@@ -43,24 +53,41 @@ class AutomaticDashboard:
             elif event == 'error':
                 if not active or generation != controller.generation:
                     continue
-                self._dismiss_result_view()
                 self.set_pass_fail('WARNING')
                 self.update_progress(100, payload)
             elif event == 'status':
                 if active and generation == controller.generation:
                     self.update_progress(100, payload)
+        if controller.reset_requested:
+            self.update_progress(100, 'Waiting for inspection results…' if self._reset_due is None
+                                 else 'Results complete — returning to live…')
+        if self._reset_due is not None and time.monotonic() >= self._reset_due:
+            self._dismiss_result_view()
+            self._reset_due = None
+            controller.finish_reset()
+            self.set_pass_fail('READY')
+            self.update_progress(100, 'Paused' if controller.paused else 'Ready — waiting for a hand cycle')
         self._auto_poll_job = self.root.after(100, self._poll_automatic)
+
+    def _toggle_automatic_pause(self):
+        controller = getattr(self, 'auto_controller', None)
+        if controller is None:
+            return
+        controller.set_paused(not controller.paused)
+        self.auto_pause_button.configure(text='PLAY' if controller.paused else 'PAUSE')
+        self.update_progress(100, 'Automatic capture paused · wheel to zoom, drag to pan'
+                             if controller.paused else 'Automatic capture running')
 
     def _submit_automatic_frame(self, raw, sequence):
         if getattr(self, 'auto_controller', None) is not None:
             self.auto_controller.submit(raw, sequence, self.camera1.undistorter,
                 {'size': self.active_size, 'width': self.active_strip_width,
-                 'tolerance': self.active_strip_width_tolerance})
+                 'tolerance': self.active_strip_width_tolerance,
+                 'end_exclusion_percent': self.active_end_exclusion_percent})
 
     def _show_automatic_results(self, result):
         measurement = result['measurement']
-        self._dismiss_result_view()
-        if measurement:
+        if measurement and getattr(self, 'result_view', None) is None:
             # Fill the physical screen, retaining the existing application chrome.
             self.root.geometry(f'{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()}+0+0')
             self.bottom_panel.pack_forget()
@@ -69,11 +96,12 @@ class AutomaticDashboard:
                 self.image_panel,
                 show_live_preview=CONFIG.get('result_view', {}).get('show_live_preview', True))
             self.result_view.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        if measurement:
             self.result_view.show_inspection(result)
         status = 'WARNING' if result['warnings'] else measurement['status']
         self.set_pass_fail(status)
         self.update_progress(100, ' | '.join(result['warnings']) or
-                             f"Rightmost line #{measurement['selected_line']} of {measurement['line_count']} "
+                             f"Line #{measurement['selected_line']} of {measurement['line_count']} "
                              'measured — results saved — monitoring hands')
 
     def _dismiss_result_view(self):

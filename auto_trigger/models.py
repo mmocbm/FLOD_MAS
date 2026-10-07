@@ -41,19 +41,18 @@ class HandPresence:
 class FabricGate:
     def __init__(self, settings):
         self.settings = settings
-        self.labels = load_labels(MODEL_DIR / 'labels.txt')
-        self.model = _keras_models().load_model(str(MODEL_DIR / 'keras_model.h5'), compile=False)
-        if not {'full_fabric', 'half_fabric', 'no_fabric'} <= set(self.labels):
-            raise ValueError('Fabric labels must contain full_fabric, half_fabric and no_fabric')
+        self.labels = load_labels(MODEL_DIR / 'labels_2c.txt')
+        self.model = _keras_models().load_model(str(MODEL_DIR / 'keras_model_2c.h5'), compile=False)
+        if self.labels != ['full_fabric', 'no_fabric']:
+            raise ValueError('Fabric labels must be 0 full_fabric and 1 no_fabric')
 
     def classify(self, frame):
         scores = np.asarray(self.model(preprocess(frame), training=False)).reshape(-1)
         if len(scores) != len(self.labels) or not np.isfinite(scores).all():
             raise ValueError('Invalid fabric classifier output')
-        index = int(np.argmax(scores))
-        label, confidence = self.labels[index], float(scores[index])
-        return {'label': label, 'confidence': confidence,
-                'accepted': label in self.settings['accepted_labels']
-                            and confidence >= self.settings['fabric_min_confidence'],
-                'empty': label == 'no_fabric' and confidence >= self.settings['fabric_min_confidence'],
+        full, empty = map(float, scores)
+        accepted = full > empty  # Strict comparison: ties do not trigger.
+        label = 'full_fabric' if accepted else 'no_fabric' if empty > full else 'uncertain'
+        return {'label': label, 'confidence': max(full, empty),
+                'accepted': accepted, 'empty': empty > full,
                 'scores': dict(zip(self.labels, map(float, scores)))}

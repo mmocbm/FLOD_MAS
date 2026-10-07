@@ -155,7 +155,8 @@
     "default_size": "M",
     "strip_width_mm": 4.0,
     "strip_width_tolerance_mm": 1.0,
-    "result_display_seconds": 5.0
+    "result_display_seconds": 5.0,
+    "end_exclusion_percent": 5.0
   },
   "sam_detection": {
     "enabled": true,
@@ -203,11 +204,7 @@
     "detect_width": 320,
     "max_hands": 2,
     "hand_confidence": 0.5,
-    "fabric_min_confidence": 0.5,
-    "accepted_labels": [
-      "full_fabric",
-      "half_fabric"
-    ]
+    "marker_confirm_seconds": 0.5
   },
   "segmentation": {
     "provider": "workflow",
@@ -232,6 +229,7 @@
     "source_model": "inspection/local/models/strip_unet_resnet34.onnx",
     "glue_model": "inspection/local/models/segformer_b0.onnx",
     "source_width": 1152,
-    "offset_pixels": 100.0
+    "offset_pixels": 100.0,
+    "subsequent_line": "rightmost"
   }
 }

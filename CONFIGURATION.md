@@ -1,7 +1,7 @@
 # Application settings
 
 For the `automate-Detection-method` branch, use [Automatic inspection](AUTOMATIC_INSPECTION.md)
-for hand triggers, local ONNX inspection of the rightmost source line, calibrated
+for hand triggers, queued local ONNX inspection of selected source lines, calibrated
 measurements, overlay/mask results and capture-retention settings.
 The manual crop/ESP inspection sections below describe the older workflow.
 
@@ -586,3 +586,32 @@ crop points through the region homography.
 
 Keep JSON syntax valid (double quotes, no trailing commas). Invalid key settings
 are rejected on startup. No extra packages are required for configuration.
+
+
+## Queued inspection and bed reset
+
+- `local_inspection.subsequent_line`: `"rightmost"` (default) or `"leftmost"`.
+  Used when result tabs or running/queued inspections already exist. An empty
+  session always inspects all detected lines. Restart after changing config.
+- `auto_trigger.marker_confirm_seconds`: `0.5`. Continuous confirmation time for
+  at least two physical ID-0 markers from `DICT_4X4_50`.
+- Marker reset waits for all accepted inspections, displays final results for
+  2 seconds, then clears the tabs. The request stays latched if markers disappear.
+- The top Pause/Play toggle stops new captures; queued work, live preview,
+  marker monitoring and result zoom/pan continue.
+
+
+## Two-class fabric gate and glue-line ends
+
+The active fabric model is `auto_trigger/models/keras_model_2c.h5` with
+`labels_2c.txt` (`0 full_fabric`, `1 no_fabric`). Trigger only when the full_fabric
+score is greater than no_fabric; ties do not trigger. The previous configurable
+confidence threshold and accepted-label list are no longer used.
+
+`inspection.end_exclusion_percent` defaults to `5.0`: ignore 5% from EACH end of
+each continuous detected glue centreline, retaining its middle 90% for width
+measurement and highlighting. Preserve the complete mask/image and detected
+length. `0` disables exclusion; values must be finite, nonnegative and below 50.
+The textbox is in Settings → Inspection profile. Save Profile persists the value
+and applies it to future captures; queued captures retain their captured setting.
+It is also available in the startup settings form.

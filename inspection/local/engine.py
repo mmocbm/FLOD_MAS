@@ -1,4 +1,4 @@
-"""In-memory rightmost-region version of the existing image workflow."""
+"""In-memory source-line inspection with shared source detection per capture."""
 from time import perf_counter
 import numpy as np
 from .geometry import (cv2, extract_lines, filter_wave_lines, offset_lines,
@@ -18,6 +18,11 @@ class LiveInspection:
             raise ValueError('Inspection offset must be positive and finite')
 
     def run(self, photo, progress=lambda text: None):
+        return next(self.run_lines(photo, progress, "rightmost"))
+
+    def run_lines(self, photo, progress=lambda text: None, selection="rightmost", on_error=None):
+        if selection not in ("all", "leftmost", "rightmost"):
+            raise ValueError("Invalid line selection")
         started = perf_counter()
         progress('AI source mask')
         source = self.source.predict(photo)
@@ -30,8 +35,17 @@ class LiveInspection:
         if not lines:
             raise ValueError('No accepted source lines. Check placement or the source mask model.')
         lines.sort(key=lambda line: float(np.mean(np.asarray(line['original_xy'])[:, 0])))
-        line = lines[-1]
-        progress(f'{len(lines)} lines; inspecting rightmost line {len(lines)}')
+        indices = range(len(lines)) if selection == 'all' else [0 if selection == 'leftmost' else len(lines)-1]
+        for index in indices:
+            progress(f'Inspecting line {index+1} of {len(lines)}')
+            try:
+                yield self._inspect_line(photo, source, lines[index], index+1, len(lines), started, progress)
+            except Exception as error:
+                if on_error is None:
+                    raise
+                on_error(index+1, error)
+
+    def _inspect_line(self, photo, source, line, index, line_count, started, progress):
         selected = region_mask(source.shape, [line])
         width, height = original_dimensions(line, self.offset)
         mx, my, _ = unfold_maps(line, width, height, 'horizontal')
@@ -52,7 +66,7 @@ class LiveInspection:
         mask[y:y+h, x:x+w] = local
         mask[selected == 0] = 0
         if not mask.any():
-            raise ValueError(f'Line {len(lines)}: adhesive model returned an empty mask.')
+            raise ValueError(f'Line {index}: adhesive model returned an empty mask.')
         progress('Measuring strip in undistorted frame pixels')
         # Measure each real component. Do not bridge disconnected glue across long gaps.
         count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
@@ -84,7 +98,7 @@ class LiveInspection:
             raise ValueError('Detected adhesive is too small to measure reliably.')
         main = max(measurements, key=lambda item: item['length_px'])
         widths = [s['width_px'] for s in main['samples'] if s['valid']]
-        return dict(mask=mask, overlay=overlay, line_count=len(lines), selected_line=len(lines),
+        return dict(mask=mask, overlay=overlay, line_count=line_count, selected_line=index,
                     length_px=sum(m['length_px'] for m in measurements),
                     longest_length_px=main['length_px'], component_count=len(measurements),
                     mean_width_px=float(np.mean(widths)) if widths else None,

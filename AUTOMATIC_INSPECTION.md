@@ -10,8 +10,9 @@ request, API key, manual mask selection or fixed inspection crops.
 1. A hand appears and leaves. Three fresh agreeing samples debounce presence;
    hands must then stay absent for 1 second. A hand-free scene does not retrigger.
 2. Copy that exact camera frame and classify fabric on the original snapshot.
-   `full_fabric` or `half_fabric` at confidence >=0.5 proceeds. Confident `no_fabric`
-   clears the result and pending capture. An uncertain verdict retains the result.
+   The two-class `keras_model_2c.h5` uses `labels_2c.txt`: 0 = `full_fabric`,
+   1 = `no_fabric`. Accept only when the full_fabric score is strictly greater
+   than no_fabric. Ties/rejected frames do not clear results or accepted captures.
 3. Undistort the accepted snapshot using the existing camera calibration.
    Missing camera calibration prevents inspection; there is no raw-frame fallback.
 4. Run the local source-region model at aspect-preserving width 1152, with reflected
@@ -20,8 +21,10 @@ request, API key, manual mask selection or fixed inspection crops.
 5. Extract curved boundaries, remove straight backing edges/caps and endpoint
    hooks (4% endpoint zone, 65 degree hook angle). Keep wave lines with minimum wave
    ratio 0.008, span 10% of the larger frame dimension, and boundary support 90%.
-6. Sort accepted lines by mean x and inspect only the RIGHTMOST line. Boundary
-   count is not fabric count. No four-line minimum or maximum is imposed.
+6. Sort accepted lines by mean x. With no results or outstanding inspections,
+   inspect ALL lines. Otherwise inspect the configured `subsequent_line`
+   (`rightmost` by default, or `leftmost`). Decide this when capturing, not later
+   when the worker dequeues it. No four-line minimum or maximum is imposed.
 7. Offset 100 undistorted-frame pixels into the source-mask interior. Apply CLAHE
    to source lightness (clip 2, 16x16 tiles), then unfold this curved band horizontally.
    Unfolded height follows the offset; width follows the band's middle arc length.
@@ -30,7 +33,8 @@ request, API key, manual mask selection or fixed inspection crops.
    thickness changes and long missing intervals. Cleanup window 9 and short-gap
    limit 12 are scaled from model-width pixels; smoothing tolerance is 0.15.
 9. Refold the cleaned mask into the full undistorted frame. Clip to the selected
-   band. Draw adhesive boundaries red and measured centrelines yellow.
+   band. Label segment widths in millimetres (pixels if uncalibrated), draw passing
+   segments green, and highlight out-of-tolerance segments red.
 10. Measure each adhesive component with area >=100 pixels using the reference PCA
     slice centreline, perpendicular recentering, 5-pixel sampling and subpixel
     boundary intersections. Total length sums separately measured components,
@@ -51,30 +55,53 @@ multiply all distances by a global millimetres-per-pixel estimate. Component
 lengths use the transformed sampled centreline points; small chord discretization
 can make them differ slightly from a scalar conversion of reference pixel length.
 
-PASS requires an available average metric width for EVERY one of the ten segments,
+Before width grading, exclude `inspection.end_exclusion_percent` from each end
+of each continuous adhesive component using its full centreline arc length.
+The default 5% retains the middle 90%, divided into ten measurement segments.
+Excluded samples do not affect pixel/mm averages, PASS/FAIL or overlay highlights.
+The original image/mask and full detected length are preserved. Gaps remain gaps.
+Set this in Settings → Inspection profile → "Exclude from EACH end (%)".
+Save Profile persists the value; allowed range is 0 <= value < 50. Each queued
+capture keeps the percentage that was active when captured.
+
+PASS requires an available average metric width for every segment of every component,
 with each average within the inclusive target +/- tolerance (default 4 +/- 1 mm).
 Any measured out-of-range segment produces FAIL when all segments are available.
 Missing plane calibration or incomplete segment measurements gives UNMEASURED
-and a dashboard WARNING, while pixel results remain available. This grades widths
-on the longest component; it does not introduce a continuity/gap acceptance rule.
+and a dashboard WARNING, while pixel results remain available. Every displayed
+component is graded; this does not introduce a continuity/gap acceptance rule.
 
 ## Results and lifecycle
 
-The result viewer shows one selected line, with OVERLAY and MASK views, zoom,
-pan, fit/reset, component/line counts, timing, total length, longest-component
-mean width, and a scrollable ten-segment average/minimum/maximum width table.
-Both pixel and calibrated millimetre values are shown. The optional live side
-preview continues showing current frames; the large result uses the captured
-undistorted frame. Overlay/mask selection is manual; there is no fabric tab timer.
+Each inspected line appends its own fabric tab, and the newest result opens
+immediately. Tabs fit the inspected line, retain independent zoom/pan, and show
+only a short status. Scroll the tab bar to revisit older lines. Mouse wheel or
++/- zooms; left-drag pans; RESET fits the image again. The small live camera
+preview remains active beside the captured overlay.
 
-One inspection runs at a time, with at most one replaceable accepted capture
-waiting. A hand returning invalidates unfinished work and cancels an obsolete
-pending capture. Finished obsolete captures are still saved but never displayed.
-Obsolete errors cannot clear a newer result. A completed result stays visible
-until replacement, confident no-fabric, a CURRENT inspection error, or reset.
-Opening settings pauses/resets the trigger and cancels pending work. Camera
-capture and hand monitoring continue during background ONNX inspection; the
-fabric gate runs synchronously in the hand-monitor thread.
+Accepted captures enter a FIFO queue. The inspection worker processes every
+capture in order, sharing one source-model inference across all selected lines.
+Each completed line is saved and published immediately; a failed line reports an
+error without preventing other lines or subsequent captures from processing.
+Returning hands never invalidate accepted captures or hide their results.
+
+The top PAUSE/PLAY toggle pauses new automatic captures only. Queued/running
+inspections finish, results keep arriving, live preview and bed-marker monitoring
+continue, and result zoom/pan remain available. Resuming requires a fresh hand
+cycle. Settings/calibration navigation still suspends the session and cancels
+pending work; this is separate from PAUSE.
+
+While results or inspections exist, the trigger thread also detects bed markers
+using `DICT_4X4_50`. Two physical ID-0 markers must remain detected for 0.5 seconds
+(`auto_trigger.marker_confirm_seconds`). Duplicate IDs are counted separately.
+This latches a reset request: no further captures are accepted until reset.
+Hands returning or markers becoming covered do not cancel the request.
+If work remains, the display says "Waiting for inspection results…". After the
+queue drains, the final results remain visible for 2 seconds, then all tabs clear
+and full live view returns. An empty fabric classification does not reset tabs.
+
+Each capture stores line artifacts in `line_1/`, `line_2/`, etc. with overlay,
+mask, preview and measurement JSON; the capture-level result records all lines.
 
 ## Configuration
 
@@ -87,9 +114,11 @@ settings tab replaces the old segmentation/SAM controls.
 | `local_inspection.glue_model` | `inspection/local/models/segformer_b0.onnx` | Local unfolded adhesive weights |
 | `local_inspection.source_width` | 1152 | Aspect-preserving source AI width |
 | `local_inspection.offset_pixels` | 100.0 | Inward band width in full undistorted-frame pixels |
+| `local_inspection.subsequent_line` | rightmost | Side inspected when a session already has results/work; leftmost also supported |
+| `auto_trigger.marker_confirm_seconds` | 0.5 | Continuous visibility of two physical ID-0 bed markers before reset |
 | `auto_trigger.hand_absence_seconds` | 1.0 | Quiet period after debounced hand absence |
 | `auto_trigger.debounce_frames` | 3 | Consistent fresh samples per presence change |
-| `auto_trigger.fabric_min_confidence` | 0.5 | Fabric acceptance and empty-table confidence |
+| `inspection.end_exclusion_percent` | 5.0 | Percentage excluded from EACH end before width grading |
 | `inspection.strip_width_mm` | 4.0 | Target width for the new measurements |
 | `inspection.strip_width_tolerance_mm` | 1.0 | Allowed +/- width tolerance |
 | `result_view.show_live_preview` | true | Small live camera panel beside results |
@@ -113,16 +142,18 @@ Documents / `data files/Dataset_capture/Automatic`:
 capture.json       # trigger frame sequence, timestamp, fabric verdict, profile
 original.png       # full-resolution snapshot with configured camera rotation
 undistorted.png    # corrected version of the SAME snapshot
-mask.png           # lossless full-resolution refolded adhesive mask
-overlay.png        # lossless full-resolution boundary/centreline overlay
-overview.jpg       # compact preview
-result.json        # processing status, settings, global-frame samples,
-                   # selected boundary, component lengths, px/mm widths and grades
+result.json        # capture status and all selected-line measurements/errors
+line_1/            # one directory per inspected line (left-to-right index)
+    mask.png       # lossless full-resolution refolded adhesive mask
+    overlay.png    # annotated widths and tolerance highlights
+    overview.jpg   # compact preview
+    result.json    # line status and global-frame measurements
+line_2/            # present when additional lines were inspected
 ```
 
 An error still saves the source pair and error metadata. No intermediate source
 masks, unfolding maps or temporary images are written during normal inspection.
-Retained sets include superseded/error captures. Retention preserves in-flight
+Retained sets include completed/error captures. Retention preserves in-flight
 sets and deletes only completed recognized sets using the existing safe policy.
 This app automatically saves captures/results; the reference app's manual-only
 save policy has deliberately not replaced that behavior.
@@ -148,8 +179,8 @@ overlays, line selection, components, pixel lengths and width segments against
 the reference on exactly the same image. The reference argument is needed only
 for this developer comparison, never for application startup or inspection.
 
-Tests cover rightmost selection, full-frame refolding, component gaps, metric
+Tests cover all/leftmost/rightmost selection, full-frame refolding, component gaps, metric
 endpoint conversion, missing calibration/segments, lossless storage, trigger
-queues, stale results/errors, and the result/settings UI. Physical hand/fabric
+FIFO queues, pause, duplicate-ID markers, delayed reset, and the result/settings UI. Physical hand/fabric
 triggering and millimetre accuracy must still be verified with representative
 fabrics on the installed camera and calibrated measurement surface.

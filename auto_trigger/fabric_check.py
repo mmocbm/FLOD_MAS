@@ -1,7 +1,7 @@
 """Reference H5 loading and fabric preprocessing, copied from hand_traker.
 
-The controller/model adapter owns gate policy. Both full_fabric and half_fabric
-are accepted there; this module only prepares the model's original input.
+The model adapter compares full_fabric against no_fabric. This module prepares
+the two-class model input using the original preprocessing.
 """
 from pathlib import Path
 import cv2
