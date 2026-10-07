@@ -50,6 +50,30 @@ class EndExclusionTests(unittest.TestCase):
             'segments': [{'segment': 1, 'within_tolerance': False, 'average_width_mm': 3}]}]}
         np.testing.assert_array_equal(annotated_overlay(image, m), image)
 
+    def test_the_detected_mask_is_tinted_under_the_grades(self):
+        image = np.zeros((120, 160, 3), np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[30:90, 40:120] = 255
+        plain = annotated_overlay(image, {'components': []})
+        tinted = annotated_overlay(image, {'components': []}, mask)
+        # Grades alone leave a bare frame; the mask is the only thing added here.
+        np.testing.assert_array_equal(plain, image)
+        self.assertFalse(np.array_equal(tinted, plain))
+        self.assertEqual(tinted.shape, image.shape)
+        # The fill covers the middle of the strip, not just its boundary.
+        self.assertTrue(tinted[60, 80].any())
+        np.testing.assert_array_equal(tinted[5, 5], image[5, 5])
+
+    def test_an_empty_mask_draws_nothing(self):
+        image = np.zeros((40, 40, 3), np.uint8)
+        np.testing.assert_array_equal(
+            annotated_overlay(image, {'components': []}, np.zeros((40, 40), np.uint8)), image)
+
+    def test_a_mask_of_the_wrong_size_is_rejected(self):
+        with self.assertRaises(ValueError):
+            annotated_overlay(np.zeros((40, 40, 3), np.uint8), {'components': []},
+                              np.zeros((20, 20), np.uint8))
+
     def test_invalid_trim_settings_rejected(self):
         _, _, result = synthetic_inspection()
         for value in (-1, 50, 90, float('nan'), float('inf'), True):

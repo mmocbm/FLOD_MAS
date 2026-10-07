@@ -76,7 +76,8 @@
         480
       ]
     ],
-    "verification_frames": 3
+    "verification_frames": 3,
+    "auto_lock_settle_seconds": 5.0
   },
   "performance": {
     "opencv_threads": 1
@@ -84,7 +85,9 @@
   "preview": {
     "max_width": 880,
     "max_height": 540,
-    "interval_ms": 100
+    "interval_ms": 100,
+    "show_overlay": true,
+    "marker_detect_width": 1280
   },
   "crop_setup": {
     "definitions_file": "Files/crop_regions.json",
@@ -221,7 +224,7 @@
   "capture_storage": {
     "directory": "Dataset_capture/Automatic",
     "save_rejected_triggers": false,
-    "max_sets": 1000,
+    "max_sets": 200,
     "jpeg_quality": 82,
     "preview_max_edge": 1920
   },

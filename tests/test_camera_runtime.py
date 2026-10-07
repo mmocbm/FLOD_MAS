@@ -16,11 +16,43 @@ class Device:
 
     def isOpened(self): return True
     def set(self, key, value): self.properties[key] = value
+    def get(self, key): return self.properties.get(key, 0.0)
     def read(self):
         time.sleep(0.005)
         spec = CONFIG['cameras'][0]
         return True, np.zeros((spec['height'], spec['width'], 3), dtype=np.uint8)
     def release(self): self.released = True
+
+
+class RecordingDevice(Device):
+    """Remembers the order properties were written in."""
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.set_order = []
+
+    def set(self, key, value):
+        self.set_order.append(key)
+        super().set(key, value)
+
+
+class IgnoringDevice(Device):
+    """Accepts set() silently but never changes state, as some drivers do."""
+    def set(self, key, value): pass
+    def get(self, key):
+        return 0.75 if key == cv2.CAP_PROP_AUTO_EXPOSURE else 1.0
+
+
+class BooleanExposureDevice(Device):
+    """Spells auto exposure 1/0 rather than the DirectShow 0.75/0.25 pair."""
+    def get(self, key):
+        if key == cv2.CAP_PROP_AUTO_EXPOSURE:
+            return 1.0 if self.properties.get(key) == 1.0 else 0.0
+        return self.properties.get(key, 0.0)
+
+
+class UnreadableDevice(Device):
+    """A backend that cannot report property values back at all."""
+    def get(self, key): raise AttributeError('this backend cannot read properties')
 
 
 class CaptureTests(unittest.TestCase):
@@ -161,6 +193,72 @@ class CaptureTests(unittest.TestCase):
             finally:
                 second.release()
                 second.thread.join(1)
+
+    @patch('camera_handler.cv2.VideoCapture', side_effect=Device)
+    def test_startup_forces_auto_white_balance_and_exposure_on(self, _):
+        stream = CameraStream(CONFIG['cameras'][0]['index'])
+        try:
+            self.assertTrue(stream.auto_control['white_balance']['ok'])
+            self.assertTrue(stream.auto_control['exposure']['ok'])
+            self.assertEqual(stream.cap.properties[cv2.CAP_PROP_AUTO_WB], 1.0)
+            self.assertIn(stream.cap.properties[cv2.CAP_PROP_AUTO_EXPOSURE], (0.75, 1.0))
+        finally:
+            stream.release()
+            stream.thread.join(1)
+
+    def test_lock_turns_white_balance_off_before_exposure(self):
+        with patch('camera_handler.cv2.VideoCapture', side_effect=RecordingDevice):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+            try:
+                stream.cap.set_order.clear()
+                result = stream.lock_automatic()
+                controlled = [key for key in stream.cap.set_order
+                              if key in (cv2.CAP_PROP_AUTO_WB, cv2.CAP_PROP_AUTO_EXPOSURE)]
+                self.assertEqual(controlled,
+                                 [cv2.CAP_PROP_AUTO_WB, cv2.CAP_PROP_AUTO_EXPOSURE])
+                self.assertTrue(result['white_balance']['ok'])
+                self.assertTrue(result['exposure']['ok'])
+                self.assertEqual(stream.cap.properties[cv2.CAP_PROP_AUTO_WB], 0.0)
+                self.assertEqual(stream.cap.properties[cv2.CAP_PROP_AUTO_EXPOSURE], 0.25)
+            finally:
+                stream.release()
+                stream.thread.join(1)
+
+    def test_driver_ignoring_property_reports_failure_not_success(self):
+        with patch('camera_handler.cv2.VideoCapture', side_effect=IgnoringDevice):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+            try:
+                result = stream.lock_automatic()
+                self.assertFalse(result['white_balance']['ok'])
+                self.assertEqual(result['white_balance']['actual'], 1.0)
+                self.assertFalse(result['exposure']['ok'])
+                self.assertEqual(result['exposure']['actual'], 0.75)
+            finally:
+                stream.release()
+                stream.thread.join(1)
+
+    def test_exposure_alternate_convention_is_found_by_fallback(self):
+        with patch('camera_handler.cv2.VideoCapture', side_effect=BooleanExposureDevice):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+            try:
+                result = stream.set_auto_exposure(True)
+                self.assertTrue(result['ok'])
+                self.assertEqual(result['actual'], 1.0)
+            finally:
+                stream.release()
+                stream.thread.join(1)
+
+    def test_unreadable_property_does_not_stop_camera_opening(self):
+        with patch('camera_handler.cv2.VideoCapture', side_effect=UnreadableDevice):
+            stream = CameraStream(CONFIG['cameras'][0]['index'])
+            try:
+                self.assertGreater(stream.size[0], 0)
+                self.assertFalse(stream.auto_control['white_balance']['ok'])
+                self.assertFalse(stream.auto_control['exposure']['ok'])
+                self.assertIsNone(stream.auto_control['white_balance']['actual'])
+            finally:
+                stream.release()
+                stream.thread.join(1)
 
     @patch('camera_handler.CameraStream')
     @patch('camera_handler.ImageUndistorter')

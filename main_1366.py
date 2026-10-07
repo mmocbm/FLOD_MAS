@@ -1,8 +1,16 @@
 # Finish settings before importing any modules that cache configuration.
 # Saving starts a fresh dashboard below; no interpreter relaunch is needed.
+import os
+import sys
+
+# Passed when the app relaunches itself after RESET. The operator already chose
+# settings for this session, so the startup countdown is not shown a second time.
+NO_STARTUP_FLAG = '--no-startup-window'
+
 if __name__ == '__main__':
-    from startup_settings import run_startup
-    run_startup()
+    if NO_STARTUP_FLAG not in sys.argv:
+        from startup_settings import run_startup
+        run_startup()
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -20,7 +28,8 @@ from CalibrateAPP.calibration_ui import CalibrationApp, CalibrationCheckApp
 from inspection.dashboard import AutomaticDashboard
 from ui_theme import (
     COLORS as C, FONT, button as themed_button, card as themed_card,
-    configure_ttk, section_label, set_button_role, status_dot,
+    configure_ttk, draw_tracking_overlay, preview_transform, section_label,
+    set_button_role, status_dot,
 )
 
 # ---------------- CONFIG ----------------
@@ -75,6 +84,9 @@ class IndustrialDashboard(AutomaticDashboard):
         # --- video / frame state ---
         self.video_streaming = False
         self.video_paused = False
+        # Hand and bed-marker overlays on the live preview. Session-only: the
+        # button below flips this, the config value is only the starting point.
+        self.show_overlays = bool(CONFIG['preview'].get('show_overlay', True))
 
         self.result_image_1 = None
         self.result_image_2 = None
@@ -176,10 +188,34 @@ class IndustrialDashboard(AutomaticDashboard):
         self.auto_pause_button = themed_button(
             self.title_bar, "PAUSE", self._toggle_automatic_pause, role="primary", padx=16, pady=6)
         self.auto_pause_button.pack(side=tk.RIGHT, fill=tk.Y)
+        # Resets restart the whole application, so they belong with the other
+        # session-wide controls rather than in the bottom panel.
+        themed_button(self.title_bar, "RESET", self.reset_dashboard, role="danger",
+                      padx=16, pady=6).pack(side=tk.RIGHT, fill=tk.Y)
+        self.overlay_button = themed_button(
+            self.title_bar, "", self._toggle_overlays, role="secondary", padx=16, pady=6)
+        self.overlay_button.pack(side=tk.RIGHT, fill=tk.Y)
+        self._refresh_overlay_button()
         self.title_bar.bind("<ButtonPress-1>", self._start_move)
         self.title_bar.bind("<B1-Motion>", self._do_move)
 
-    def close_application(self):
+    def _refresh_overlay_button(self):
+        self.overlay_button.configure(text="OVERLAY ON" if self.show_overlays else "OVERLAY OFF")
+        set_button_role(self.overlay_button, "secondary" if self.show_overlays else "quiet")
+
+    def _toggle_overlays(self):
+        self.show_overlays = not self.show_overlays
+        self._refresh_overlay_button()
+        if not self.show_overlays:
+            # Clear at once rather than waiting for the next tick to find None.
+            self.canvas_1.delete("overlay")
+            self._overlay_shown_1 = False
+            view = getattr(self, 'result_view', None)
+            if view is not None:
+                view.clear_live_overlay()
+
+    def _shutdown_session(self):
+        """Stop every worker and hand the cameras back to the driver."""
         self._closing = True
         self.auto_controller.stop()
         self._dismiss_result_view()
@@ -191,6 +227,22 @@ class IndustrialDashboard(AutomaticDashboard):
         self.video_streaming = False
         if self.camera1: self.camera1.release()
         if self.camera2: self.camera2.release()
+
+    def close_application(self):
+        self._shutdown_session()
+        self.root.destroy()
+
+    def restart_application(self):
+        """RESET: relaunch the process rather than only clearing the view.
+
+        The session is torn down first, so the replacement process opens cameras
+        nobody else holds. The startup countdown is skipped because the operator
+        already chose settings for this session and a reset is not a new one.
+        """
+        self._shutdown_session()
+        script = os.path.abspath(__file__)
+        subprocess.Popen([sys.executable, script, NO_STARTUP_FLAG],
+                         cwd=os.path.dirname(script))
         self.root.destroy()
 
     def minimize_window(self, target_win=None):
@@ -269,15 +321,8 @@ class IndustrialDashboard(AutomaticDashboard):
         )
         self.status_result_label.pack(fill=tk.X, padx=16, pady=(2, 8))
 
-        # ---- right: buttons ----
-        right_section = tk.Frame(self.bottom_panel, bg=C["surface"])
-        right_section.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 16), pady=13)
-        self.btn_container = tk.Frame(right_section, bg=C["surface"])
-        self.btn_container.pack(expand=True)
-        themed_button(self.btn_container, "SETTINGS", self.open_settings_selector,
-                      role="secondary", width=11, pady=15).pack(side=tk.LEFT, padx=4)
-        themed_button(self.btn_container, "RESET", self.reset_dashboard,
-                      role="danger", width=9, pady=15).pack(side=tk.LEFT, padx=4)
+        # SETTINGS lives only in the title bar, and RESET beside PAUSE there, so
+        # the bottom panel is left with the read-only status displays.
 
     # ==============================================================
     # settings windows
@@ -816,13 +861,16 @@ class IndustrialDashboard(AutomaticDashboard):
             raw, sequence = self.camera1.stream.read_snapshot()
             if raw is not None:
                 self._submit_automatic_frame(raw, sequence)
+                # Resolved once per tick so both views agree, and so the result
+                # view never has to reach for the controller itself.
+                geometry = self._overlay_geometry()
                 if self.result_view is None:
-                    self._display_video_frame(raw, 1)
+                    self._display_video_frame(raw, 1, geometry)
                 else:
-                    self.result_view.update_live_preview(raw)
+                    self.result_view.update_live_preview(raw, geometry)
         self._video_job = self.root.after(CONFIG['preview']['interval_ms'], self.update_video_feed)
 
-    def _display_video_frame(self, frame, canvas_num):
+    def _display_video_frame(self, frame, canvas_num, geometry=None):
         """Display a frame on the specified canvas, automatically resizing to canvas size."""
         if canvas_num == 1:
             canvas = self.canvas_1
@@ -846,32 +894,40 @@ class IndustrialDashboard(AutomaticDashboard):
                 ch = WINDOW_HEIGHT - TITLE_BAR_HEIGHT - BOTTOM_PANEL_HEIGHT - 40
 
         frame_height, frame_width = frame.shape[:2]
-        preview_scale = min(1.0, min(cw, CONFIG['preview']['max_width']) / frame_width,
-                            min(ch, CONFIG['preview']['max_height']) / frame_height)
+        preview_scale, offset_x, offset_y = preview_transform(
+            (frame_width, frame_height), cw, ch,
+            CONFIG['preview']['max_width'], CONFIG['preview']['max_height'])
         previous = getattr(self, f'_preview_snapshot_{canvas_num}', None)
-        if (previous is not None and previous[0] is frame
+        if not (previous is not None and previous[0] is frame
                 and previous[1:] == (canvas, cw, ch) and canvas.find_withtag("img")):
-            return
-        frame_resized = cv2.resize(
-            frame,
-            (max(1, int(frame_width * preview_scale)),
-             max(1, int(frame_height * preview_scale))),
-            # Linear sampling touches a few source pixels per preview pixel;
-            # area averaging scans the entire full-resolution source image.
-            interpolation=cv2.INTER_LINEAR,
-        )
-        pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
+            frame_resized = cv2.resize(
+                frame,
+                (max(1, int(frame_width * preview_scale)),
+                 max(1, int(frame_height * preview_scale))),
+                # Linear sampling touches a few source pixels per preview pixel;
+                # area averaging scans the entire full-resolution source image.
+                interpolation=cv2.INTER_LINEAR,
+            )
+            pil_img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
 
-        photo = ImageTk.PhotoImage(pil_img)
-        setattr(self, f"tk_image_{canvas_num}", photo)
-        items = canvas.find_withtag("img")
-        if items:
-            canvas.itemconfigure(items[0], image=photo)
-            canvas.coords(items[0], cw // 2, ch // 2)
-        else:
-            canvas.create_image(cw // 2, ch // 2, image=photo, anchor=tk.CENTER, tags="img")
-        canvas.tag_lower("img")
-        setattr(self, f'_preview_snapshot_{canvas_num}', (frame, canvas, cw, ch))
+            photo = ImageTk.PhotoImage(pil_img)
+            setattr(self, f"tk_image_{canvas_num}", photo)
+            items = canvas.find_withtag("img")
+            if items:
+                canvas.itemconfigure(items[0], image=photo)
+                canvas.coords(items[0], cw // 2, ch // 2)
+            else:
+                canvas.create_image(cw // 2, ch // 2, image=photo, anchor=tk.CENTER, tags="img")
+            canvas.tag_lower("img")
+            setattr(self, f'_preview_snapshot_{canvas_num}', (frame, canvas, cw, ch))
+        # Redrawn even when the frame above was reused: the image can repeat
+        # while the detections do not, and the early return must not skip them.
+        if geometry:
+            draw_tracking_overlay(canvas, geometry, preview_scale, offset_x, offset_y)
+            setattr(self, f'_overlay_shown_{canvas_num}', True)
+        elif getattr(self, f'_overlay_shown_{canvas_num}', False):
+            canvas.delete("overlay")
+            setattr(self, f'_overlay_shown_{canvas_num}', False)
 
     # ==============================================================
     # inspection result – crops on screen until the operator resumes
@@ -1028,24 +1084,10 @@ def main():
 
     # ------------------------------------------------------------------
     def reset_system():
-        app.update_progress(0, "Resetting…")
-
-        app.result_image_1 = app.result_image_2 = None
-        app.original_full_res_1 = app.original_full_res_2 = None
-
-        # Ensure we are in dual view
-        app.restore_dual_view()
-
-        # Clear any leftover drawings on canvases
-        app.canvas_1.delete("all")
-        app.canvas_2.delete("all")
-
-        # Reset zoom/pan values
-        app.zoom_level_1 = app.zoom_level_2 = 1.0
-        app.pan_x_1 = app.pan_y_1 = app.pan_x_2 = app.pan_y_2 = 0
-
-        app.video_paused = False
-        app._refresh_inspection_availability()
+        # A reset is a fresh start, not a cleared view: the whole application is
+        # relaunched, so cameras, calibration and the inspection session all
+        # begin again from the state the app boots into.
+        app.restart_application()
 
     # ------------------------------------------------------------------
     app = IndustrialDashboard(root, reset_system)

@@ -29,7 +29,8 @@ class AutomaticCameraTests(unittest.TestCase):
         app.update_video_feed()
         app._submit_automatic_frame.assert_called_once_with(raw, 17)
         app._display_video_frame.assert_not_called()
-        app.result_view.update_live_preview.assert_called_once_with(raw)
+        # Overlays are off by default on a bare instance, so no geometry is sent.
+        app.result_view.update_live_preview.assert_called_once_with(raw, None)
 
     def test_missing_calibration_still_allows_setup(self):
         app = IndustrialDashboard.__new__(IndustrialDashboard)

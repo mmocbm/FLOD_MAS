@@ -61,7 +61,9 @@ class InspectionPipeline:
                                                    on_error=failed_line):
                 measurement = measurement_record(result, scale, target_width, tolerance,
                     metadata.get('end_exclusion_percent', self.config['inspection'].get('end_exclusion_percent', 5.0)))
-                overlay = annotated_overlay(undistorted, measurement)
+                # The mask is what the operator sees as the strip, so it is
+                # drawn under the graded centrelines rather than instead of them.
+                overlay = annotated_overlay(undistorted, measurement, result['mask'])
                 line_path = path / f"line_{result['selected_line']}"
                 line_path.mkdir()
                 self.store.save_mask(line_path, result['mask'])

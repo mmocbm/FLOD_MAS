@@ -9,6 +9,11 @@ from .pipeline import InspectionPipeline
 from .storage import CaptureStore
 from .result_view import LineResultView
 
+# Detections older than this are not drawn. The worker cannot publish once the
+# feed is paused, switched off or the thread has failed, so this age is what
+# clears the overlay in those cases instead of leaving stale boxes on screen.
+OVERLAY_MAX_AGE = 0.5
+
 
 class AutomaticDashboard:
     def _init_automatic(self):
@@ -77,6 +82,26 @@ class AutomaticDashboard:
         self.auto_pause_button.configure(text='PLAY' if controller.paused else 'PAUSE')
         self.update_progress(100, 'Automatic capture paused · wheel to zoom, drag to pan'
                              if controller.paused else 'Automatic capture running')
+
+    def _overlay_geometry(self):
+        """Latest hand and marker geometry for the preview, or None to draw nothing.
+
+        Read on the Tk thread only. None means "nothing to show", whether that
+        is because the overlays are switched off, no detection has happened, the
+        camera session has changed, or the last detection has gone stale.
+        """
+        if not getattr(self, 'show_overlays', False):
+            return None
+        controller = getattr(self, 'auto_controller', None)
+        snapshot = getattr(controller, 'detections', None)
+        if snapshot is None:
+            return None
+        _, epoch, stamp, size, hands, markers = snapshot
+        if epoch != controller.epoch or time.monotonic() - stamp > OVERLAY_MAX_AGE:
+            return None
+        if not hands and not markers:
+            return None
+        return {'hands': hands, 'markers': markers, 'size': size}
 
     def _submit_automatic_frame(self, raw, sequence):
         if getattr(self, 'auto_controller', None) is not None:

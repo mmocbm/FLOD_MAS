@@ -3,7 +3,7 @@ import tkinter as tk
 import cv2
 from PIL import Image, ImageTk
 from crop_result_view import CropResultView
-from ui_theme import COLORS as C, button as themed_button
+from ui_theme import COLORS as C, button as themed_button, draw_tracking_overlay, preview_transform
 
 
 class FabricResultView(CropResultView):
@@ -52,7 +52,7 @@ class FabricResultView(CropResultView):
                                 font=('Segoe UI', 14, 'bold'), anchor='w', justify='left')
         self.summary.pack(side=tk.BOTTOM, fill=tk.X, pady=8)
 
-    def update_live_preview(self, frame):
+    def update_live_preview(self, frame, geometry=None):
         if not self.show_live_preview:
             return  # no resize or PhotoImage work when the option is off
         canvas = self.live_canvas
@@ -60,7 +60,7 @@ class FabricResultView(CropResultView):
         if width <= 1 or height <= 1:
             return
         h, w = frame.shape[:2]
-        scale = min(width / w, height / h)
+        scale, offset_x, offset_y = preview_transform((w, h), width, height)
         small = cv2.resize(frame, (max(1, round(w*scale)), max(1, round(h*scale))),
                            interpolation=cv2.INTER_LINEAR)
         self._live_photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB)))
@@ -69,6 +69,18 @@ class FabricResultView(CropResultView):
         else:
             canvas.itemconfigure(self._live_item, image=self._live_photo)
             canvas.coords(self._live_item, width/2, height/2)
+        if geometry:
+            draw_tracking_overlay(canvas, geometry, scale, offset_x, offset_y)
+            self._live_overlay = True
+        elif getattr(self, '_live_overlay', False):
+            canvas.delete("overlay")
+            self._live_overlay = False
+
+    def clear_live_overlay(self):
+        """Drop the overlay items without disturbing the live image item."""
+        if getattr(self, '_live_overlay', False):
+            self.live_canvas.delete("overlay")
+            self._live_overlay = False
 
     def _tab_label(self, index):
         return f'FABRIC {index+1}'

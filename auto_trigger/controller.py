@@ -41,6 +41,13 @@ class AutoController(threading.Thread):
         self.gate_busy = False
         self.job_generation = -1
         self.last_status = None
+        # Latest preview geometry, read by the Tk thread. The whole snapshot is
+        # one immutable tuple replaced in a single assignment, so a reader can
+        # never observe it half-built. Coordinates are full-frame pixels.
+        #   (sequence, epoch, monotonic_time, (height, width), hands, markers)
+        self.detections = None
+        # Resolution of the display-only marker scan. 0 keeps it at full size.
+        self.overlay_marker_width = config.get('preview', {}).get('marker_detect_width', 1280)
 
     def submit(self, frame, sequence, undistorter, profile):
         with self.lock:
@@ -55,6 +62,7 @@ class AutoController(threading.Thread):
                 self.generation += 1
                 self.epoch += 1
                 self.latest = None
+                self.detections = None
                 if not active:
                     self.has_results = False
                     self.reset_requested = False
@@ -118,6 +126,7 @@ class AutoController(threading.Thread):
             self.paused = bool(paused)
             self.pause_revision += 1
             self.latest = None
+            self.detections = None
         self.wake.set()
 
     def finish_reset(self):
@@ -128,7 +137,22 @@ class AutoController(threading.Thread):
             self.reset_ready = False
             self.epoch += 1
             self.latest = None
+            self.detections = None
         self.wake.set()
+
+    def _hand_detect(self, hand, raw):
+        """Return (present, landmarks) from whichever interface the hand offers.
+
+        Tests inject a stand-in implementing only present(); it gets the raw
+        frame and its verdict is used unchanged, exactly as before.
+        """
+        detect = getattr(hand, 'detect', None)
+        if detect is None:
+            return hand.present(raw), ()
+        return detect(raw)
+
+    def _publish_detections(self, sequence, epoch, now, size, hands, markers):
+        self.detections = (sequence, epoch, now, size, hands, markers)
 
     def _check_reset_ready(self):
         if self.reset_requested and not self.busy and not self.reset_ready:
@@ -215,18 +239,28 @@ class AutoController(threading.Thread):
                 try:
                     if item_epoch != self.epoch or not self.active:
                         continue
+                    now = time.monotonic()
                     if self.has_results or self.busy:
-                        if self.marker_monitor.update(raw, time.monotonic()) and not self.reset_requested:
+                        if self.marker_monitor.update(raw, now) and not self.reset_requested:
                             self.reset_requested = True
                             self.events.put(('reset_wait', self.generation, 'Waiting for inspection results…'))
                     else:
                         self.marker_monitor.reset()
                     self._check_reset_ready()
+                    # Preview geometry only. This is a second, downscaled scan
+                    # that exists purely to be drawn; it cannot arm the reset
+                    # above, which stays the full-resolution scan's decision.
+                    markers = self.marker_monitor.detect_for_display(raw, self.overlay_marker_width)
                     if self.paused or self.reset_requested:
+                        # No hand inference runs on this path, so publish the
+                        # markers with no hands rather than leaving the last
+                        # skeleton drawn over a frame that no longer has one.
+                        self._publish_detections(sequence, item_epoch, now, raw.shape[:2], (), markers)
                         continue
-                    raw_present = hand.present(raw)
+                    raw_present, hands = self._hand_detect(hand, raw)
                     if item_epoch != self.epoch or not self.active:
                         continue
+                    self._publish_detections(sequence, item_epoch, now, raw.shape[:2], hands, markers)
                     present = self.presence.update(raw_present)
                     fired = self.checkpoint.update(present, time.monotonic())
                     if not fired:

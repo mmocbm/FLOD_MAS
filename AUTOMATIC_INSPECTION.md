@@ -123,7 +123,7 @@ settings tab replaces the old segmentation/SAM controls.
 | `inspection.strip_width_tolerance_mm` | 1.0 | Allowed +/- width tolerance |
 | `result_view.show_live_preview` | true | Small live camera panel beside results |
 | `capture_storage.save_rejected_triggers` | false | Preserve sources for rejected/error triggers too |
-| `capture_storage.max_sets` | 1000 | Whole capture sets retained |
+| `capture_storage.max_sets` | 200 | Whole capture sets retained; the oldest is deleted once a newer one is started |
 
 Model paths are relative to the application source folder (absolute paths are also
 accepted). Calibration/capture paths use the existing Documents data root.

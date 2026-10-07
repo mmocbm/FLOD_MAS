@@ -44,6 +44,68 @@ def hex_to_bgr(value):
     red, green, blue = (int(digits[index:index + 2], 16) for index in (0, 2, 4))
     return blue, green, red
 
+
+# MediaPipe's 21 hand landmarks, as the standard connections between them.
+HAND_POINTS = 21
+HAND_EDGES = ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8),
+              (5, 9), (9, 10), (10, 11), (11, 12), (9, 13), (13, 14), (14, 15),
+              (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17))
+
+
+def preview_transform(frame_size, canvas_width, canvas_height,
+                      max_width=None, max_height=None):
+    """Map full-resolution frame pixels onto a canvas, returning scale and origin.
+
+    Both the frame image and its overlay call this, so the boxes cannot drift
+    away from the pixels they describe. Passing a maximum reproduces the main
+    preview's rules (the scale never grows past 1.0, sizes are truncated);
+    omitting them reproduces the side panel's (the image may grow, sizes round).
+    """
+    frame_width, frame_height = frame_size
+    scale_x = (min(canvas_width, max_width) if max_width else canvas_width) / frame_width
+    scale_y = (min(canvas_height, max_height) if max_height else canvas_height) / frame_height
+    scale = min(scale_x, scale_y)
+    if max_width is None:
+        width = max(1, round(frame_width * scale))
+        height = max(1, round(frame_height * scale))
+    else:
+        scale = min(1.0, scale)
+        width = max(1, int(frame_width * scale))
+        height = max(1, int(frame_height * scale))
+    return scale, canvas_width / 2 - width / 2, canvas_height / 2 - height / 2
+
+
+def draw_tracking_overlay(canvas, geometry, scale, offset_x, offset_y, tag="overlay"):
+    """Redraw the hand skeleton and bed-marker outlines.
+
+    Clears by tag first, the way the result spinner does, so a tick costs a
+    delete plus the items themselves and never touches the frame image. The
+    image keeps its own ``img`` tag, which must stay unique per canvas.
+    """
+    canvas.delete(tag)
+    if not geometry:
+        return
+
+    def across(x):
+        return offset_x + x * scale
+
+    def down(y):
+        return offset_y + y * scale
+
+    for hand in geometry['hands']:
+        points = [(across(x), down(y)) for x, y in hand]
+        if len(points) == HAND_POINTS:
+            for start, end in HAND_EDGES:
+                canvas.create_line(*points[start], *points[end],
+                                   fill=COLORS["accent"], width=2, tags=tag)
+        for x, y in points:
+            canvas.create_oval(x - 3, y - 3, x + 3, y + 3,
+                               fill=COLORS["success"], outline="", tags=tag)
+    for marker in geometry['markers']:
+        flattened = [value for x, y in marker for value in (across(x), down(y))]
+        canvas.create_polygon(*flattened, fill="", outline=COLORS["warning"],
+                              width=3, tags=tag)
+
 BUTTON_ROLES = {
     "primary": (COLORS["accent_dark"], COLORS["accent_hover"], COLORS["text"]),
     "blue": (COLORS["blue"], COLORS["blue_hover"], "#FFFFFF"),

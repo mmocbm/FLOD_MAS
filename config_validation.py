@@ -91,6 +91,14 @@ def validate_config(CONFIG):
     for key in ("max_width", "max_height", "interval_ms"):
         if CONFIG["preview"][key] <= 0:
             raise ValueError(f"Preview {key} must be positive")
+    if not isinstance(CONFIG["preview"].get('show_overlay', True), bool):
+        raise ValueError("Preview show_overlay must be true or false")
+    # Zero keeps the display-only marker scan at full resolution. It is drawn on
+    # every frame, so a negative or non-numeric value would fail inside OpenCV.
+    marker_width = CONFIG["preview"].get('marker_detect_width', 0)
+    if (isinstance(marker_width, bool) or not isinstance(marker_width, int)
+            or marker_width < 0):
+        raise ValueError("Preview marker_detect_width must be a nonnegative whole number")
     crop_setup = CONFIG.get('crop_setup', {})
     if crop_setup.get('crops_per_camera') != 2:
         raise ValueError("Crop setup must define exactly two crops per camera")
@@ -127,6 +135,12 @@ def validate_config(CONFIG):
         raise ValueError("Measurement board thickness must not be negative")
     if CONFIG['capture']['verification_frames'] < 1:
         raise ValueError("Capture verification_frames must be positive")
+    # Startup renders every config value as an editable field, so this could be
+    # set to zero or a negative number, which would make the settle timer fire at once.
+    settle_seconds = CONFIG['capture'].get('auto_lock_settle_seconds', 5.0)
+    if (isinstance(settle_seconds, bool) or not isinstance(settle_seconds, (int, float))
+            or settle_seconds <= 0):
+        raise ValueError("Capture auto_lock_settle_seconds must be a positive number")
     if not CONFIG['capture'].get('resolution_cache_file'):
         raise ValueError("Capture resolution_cache_file must not be empty")
     if not CONFIG['capture']['fallback_resolutions'] or any(

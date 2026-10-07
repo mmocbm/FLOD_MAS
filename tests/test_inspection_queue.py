@@ -4,6 +4,7 @@ from concurrent.futures import Future
 import json
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,67 @@ class MarkerTests(unittest.TestCase):
         self.assertTrue(monitor.update(frame, 1.51))
         self.assertFalse(monitor.update(one, 2))
         self.assertFalse(monitor.update(frame, 3))
+
+    def test_display_scan_reports_full_frame_corners_and_leaves_the_timer_alone(self):
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        marker = cv2.aruco.generateImageMarker(dictionary, 0, 100)
+        frame = np.full((260, 400), 255, np.uint8)
+        frame[60:160, 30:130] = marker
+        frame[60:160, 250:350] = marker
+        monitor = BedMarkers(.5)
+        # A downscaled scan must scale its corners back, or the overlay would be
+        # drawn at half size in the corner of the preview.
+        for width in (0, 200, 100):
+            corners = monitor.detect_for_display(frame, width)
+            self.assertEqual(len(corners), 2, width)
+            xs = [x for corner in corners for x, _ in corner]
+            self.assertAlmostEqual(min(xs), 30, delta=3, msg=width)
+            self.assertAlmostEqual(max(xs), 350, delta=3, msg=width)
+        # It exists only to be drawn, so the reset decision cannot depend on it.
+        self.assertIsNone(monitor.since)
+
+    def test_display_scan_returns_nothing_for_a_clear_frame(self):
+        monitor = BedMarkers(.5)
+        self.assertEqual(monitor.detect_for_display(np.full((260, 400), 255, np.uint8), 200), ())
+
+
+class OverlayGeometryTests(unittest.TestCase):
+    """The preview reads one snapshot; these pin every reason it draws nothing."""
+
+    def app(self, controller_epoch=3, snapshot_epoch=None, age=0.0,
+            hands=(((0, 0),),), markers=(), show=True):
+        if snapshot_epoch is None:
+            snapshot_epoch = controller_epoch
+        controller = SimpleNamespace(epoch=controller_epoch)
+        controller.detections = (1, snapshot_epoch, time.monotonic() - age,
+                                 (10, 10), hands, markers)
+        app = SimpleNamespace(show_overlays=show, auto_controller=controller)
+        return app
+
+    def test_geometry_is_returned_while_fresh(self):
+        geometry = AutomaticDashboard._overlay_geometry(self.app())
+        self.assertEqual(geometry['hands'], (((0, 0),),))
+        self.assertEqual(geometry['size'], (10, 10))
+
+    def test_nothing_is_drawn_when_the_switch_is_off(self):
+        self.assertIsNone(AutomaticDashboard._overlay_geometry(self.app(show=False)))
+
+    def test_stale_geometry_is_dropped_when_the_worker_stops(self):
+        self.assertIsNone(AutomaticDashboard._overlay_geometry(self.app(age=1.0)))
+
+    def test_geometry_from_a_previous_session_is_dropped(self):
+        # The controller bumped its epoch, so the snapshot is from the camera
+        # that was showing before the switch.
+        self.assertIsNone(AutomaticDashboard._overlay_geometry(
+            self.app(controller_epoch=4, snapshot_epoch=3)))
+
+    def test_an_empty_snapshot_draws_nothing(self):
+        self.assertIsNone(
+            AutomaticDashboard._overlay_geometry(self.app(hands=(), markers=())))
+
+    def test_a_controller_that_never_ran_draws_nothing(self):
+        app = SimpleNamespace(show_overlays=True, auto_controller=SimpleNamespace(epoch=0))
+        self.assertIsNone(AutomaticDashboard._overlay_geometry(app))
 
 
 class QueueTests(unittest.TestCase):
@@ -132,6 +194,24 @@ class BatchTests(unittest.TestCase):
             old = store._sets()[0]
             store.begin(frame, frame, {})
             self.assertFalse(old.exists())
+
+    def test_batch_overlay_shows_the_detected_adhesive_region(self):
+        frame, inspector, _ = synthetic_inspection()
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = InspectionPipeline(inspector, CaptureStore(directory, CONFIG['capture_storage']),
+                                          CONFIG)
+            results = []
+            with patch('inspection.pipeline.plane_scale.load_frame_scale',
+                       return_value=PlaneScale(np.diag([.1,.1,1]), .1)):
+                pipeline.run_batch(frame, frame, {'line_selection': 'all'}, 10, .1,
+                                   on_result=results.append)
+            self.assertEqual(len(results), 2)
+            for result in results:
+                mask = np.squeeze(result['mask'])
+                # Eroded so the assertion is about the fill, not the outline.
+                interior = cv2.erode(mask, np.ones((9, 9), np.uint8)).astype(bool)
+                self.assertTrue(interior.any())
+                self.assertFalse(np.array_equal(result['overlay'][interior], frame[interior]))
 
 
 if __name__ == '__main__':

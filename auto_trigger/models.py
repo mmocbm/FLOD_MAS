@@ -23,7 +23,13 @@ class HandPresence:
                 min_hand_presence_confidence=settings['hand_confidence'],
                 min_tracking_confidence=settings['hand_confidence']))
 
-    def present(self, frame):
+    def detect(self, frame):
+        """Return (present, hands) with hand landmarks in full-frame pixels.
+
+        One inference call. MediaPipe reports normalised coordinates against the
+        image it was handed, which is a uniform rescale of the full frame, so
+        multiplying by the full width and height is exact.
+        """
         import mediapipe as mp
         h, w = frame.shape[:2]
         small = cv2.resize(frame, (self.width, max(1, round(h*self.width/w))))
@@ -32,7 +38,13 @@ class HandPresence:
         timestamp = max(self.last_timestamp + 1, int(time.monotonic()*1000))
         self.last_timestamp = timestamp
         # Inference errors propagate; a failed hand check must not mean "absent".
-        return bool(self.landmarker.detect_for_video(image, timestamp).hand_landmarks)
+        found = self.landmarker.detect_for_video(image, timestamp).hand_landmarks
+        hands = tuple(tuple((float(point.x * w), float(point.y * h)) for point in hand)
+                      for hand in found)
+        return bool(hands), hands
+
+    def present(self, frame):
+        return self.detect(frame)[0]
 
     def close(self):
         self.landmarker.close()

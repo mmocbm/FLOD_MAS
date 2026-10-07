@@ -13,6 +13,14 @@ RESOLUTION_CACHE_PATH = Path(project_path(CONFIG['capture'].get(
     'resolution_cache_file', 'Files/camera_resolution_cache.json')))
 _resolution_cache_lock = threading.Lock()
 
+# Backends disagree on the numeric spelling of "automatic". DirectShow commonly
+# uses 0.75/0.25 for auto/manual exposure, other backends use 1/0. Each setter
+# tries its candidates in order and keeps the first the driver confirms.
+AUTO_WB_VALUES = {True: (1.0,), False: (0.0,)}
+AUTO_EXPOSURE_VALUES = {True: (0.75, 1.0), False: (0.25, 0.0)}
+AUTO_WB_TOLERANCE = 0.5
+AUTO_EXPOSURE_TOLERANCE = 0.1
+
 
 def _resolution_signature(spec):
     """Identify settings that can change the camera's best usable mode."""
@@ -65,6 +73,11 @@ class CameraStream:
     def __init__(self, index):
         self.index = index
         self.lock = threading.Lock()
+        # Guards entry into the driver itself. The capture thread and a property
+        # change must never be inside one VideoCapture at the same time: DirectShow
+        # may stall the graph. self.lock only guards the frame swap, which happens
+        # after read() returns, so it cannot serve this purpose.
+        self.device_lock = threading.Lock()
         self.frame = None
         self.error = None
         self.resolution_warning = None
@@ -116,6 +129,9 @@ class CameraStream:
             _write_cached_resolution(index, signature, actual)
             self.size = self._rotated_size(actual)
             self.frame = frame
+            # Baseline for the session. Last, because changing resolution or FPS
+            # reconfigures the graph and some drivers reset their auto flags with it.
+            self.auto_control = self.force_automatic()
         except Exception:
             self.cap.release()
             raise
@@ -156,10 +172,52 @@ class CameraStream:
         except cv2.error:
             return None
 
+    def _set_verified(self, prop, candidates, tolerance):
+        """Set one property, confirm by read-back, trying alternative spellings.
+
+        The driver's own read-back is the verdict. A backend that ignores the
+        property returns ok False with whatever value it actually holds, so the
+        operator can be told the truth instead of being shown a false success.
+        """
+        result = {'ok': False, 'requested': None, 'actual': None}
+        with self.device_lock:
+            for value in candidates:
+                try:
+                    self.cap.set(prop, value)
+                    actual = float(self.cap.get(prop))
+                except Exception:
+                    # A backend that cannot report state is a failure, not a crash.
+                    break
+                result['requested'] = value
+                result['actual'] = actual
+                if abs(actual - value) <= tolerance:
+                    result['ok'] = True
+                    return result
+        return result
+
+    def set_auto_white_balance(self, enabled):
+        return self._set_verified(cv2.CAP_PROP_AUTO_WB,
+                                  AUTO_WB_VALUES[bool(enabled)], AUTO_WB_TOLERANCE)
+
+    def set_auto_exposure(self, enabled):
+        return self._set_verified(cv2.CAP_PROP_AUTO_EXPOSURE,
+                                  AUTO_EXPOSURE_VALUES[bool(enabled)], AUTO_EXPOSURE_TOLERANCE)
+
+    def force_automatic(self):
+        """Session baseline: put both automatic controls on. Never raises."""
+        return {'white_balance': self.set_auto_white_balance(True),
+                'exposure': self.set_auto_exposure(True)}
+
+    def lock_automatic(self):
+        """Turn automatic control off: white balance first, then exposure."""
+        return {'white_balance': self.set_auto_white_balance(False),
+                'exposure': self.set_auto_exposure(False)}
+
     def _capture(self):
         try:
             while not self.stopped.is_set():
-                ok, frame = self.cap.read()
+                with self.device_lock:
+                    ok, frame = self.cap.read()
                 # Keep acquisition limited to reading and swapping the newest
                 # raw frame. Any transformation here can let a driver queue grow.
                 with self.lock:

@@ -132,6 +132,9 @@ class StorageTests(unittest.TestCase):
             self.assertTrue((paths[-1]/'undistorted.png').is_file())
             self.assertTrue((paths[-1]/'fabric_01.jpg').is_file())
 
+    def test_shipped_retention_default_is_two_hundred_sets(self):
+        self.assertEqual(CONFIG['capture_storage']['max_sets'], 200)
+
     def test_inflight_set_is_never_pruned(self):
         with tempfile.TemporaryDirectory() as directory:
             store = CaptureStore(directory, dict(CONFIG['capture_storage'], max_sets=1))
@@ -334,6 +337,119 @@ class ControllerTests(unittest.TestCase):
             release.set()
             controller.stop()
             controller.join(2)
+
+
+class DetectionPublishingTests(unittest.TestCase):
+    """The controller publishes preview geometry without changing the trigger."""
+
+    def build(self, hand_class):
+        cfg = copy.deepcopy(CONFIG)
+        cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)
+
+        class Gate:
+            def __init__(self, settings): pass
+
+            def classify(self, frame):
+                return {'accepted': True, 'empty': False, 'label': 'full_fabric', 'confidence': .99}
+
+        class Pipeline:
+            def run(self, original, *args):
+                return {'fabrics': []}
+
+        controller = AutoController(cfg, Pipeline, hand_class, Gate)
+        controller.start()
+        self.addCleanup(self.stop, controller)
+        return controller
+
+    def stop(self, controller):
+        controller.stop()
+        controller.join(2)
+
+    def feed(self, controller, sequence, value=0):
+        frame = np.full((20, 20, 3), value, np.uint8)
+        controller.submit(frame, sequence, SimpleNamespace(undistort=lambda f: f.copy()),
+                          {'size': 'M', 'width': 4, 'tolerance': 1})
+        # The absence timer is wall-clock, so frames must be spaced out for it.
+        time.sleep(.08)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if getattr(controller, 'detections', None) is not None:
+                snapshot = controller.detections
+                if snapshot[0] == sequence:
+                    return snapshot
+            time.sleep(.01)
+        self.fail(f'no detections published for sequence {sequence}')
+
+    def test_landmarks_are_published_when_the_hand_can_report_them(self):
+        landmarks = tuple((float(index), float(index)) for index in range(21))
+
+        class Hand:
+            def __init__(self, settings): pass
+
+            def detect(self, frame): return True, (landmarks,)
+
+            def present(self, frame): return True
+
+            def close(self): pass
+
+        controller = self.build(Hand)
+        _, _, _, size, hands, markers = self.feed(controller, 1)
+        self.assertEqual(size, (20, 20))
+        self.assertEqual(hands, (landmarks,))
+        self.assertEqual(markers, ())
+
+    def test_a_hand_without_detection_still_triggers_and_publishes_no_landmarks(self):
+        # The injected stand-in used across these tests implements only
+        # present(); it must keep working exactly as before.
+        triggered = threading.Event()
+
+        class Hand:
+            def __init__(self, settings): pass
+
+            def present(self, frame): return bool(frame[0, 0, 0])
+
+            def close(self): pass
+
+        cfg = copy.deepcopy(CONFIG)
+        cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)
+
+        class Gate:
+            def __init__(self, settings): pass
+
+            def classify(self, frame): return {'accepted': True, 'empty': False,
+                                               'label': 'full_fabric', 'confidence': .99}
+
+        class Pipeline:
+            def run(self, original, *args):
+                triggered.set()
+                return {'fabrics': []}
+
+        controller = AutoController(cfg, Pipeline, Hand, Gate)
+        controller.start()
+        self.addCleanup(self.stop, controller)
+        sequence = 0
+        for value in (1, 0, 0):
+            sequence += 1
+            self.feed(controller, sequence, value=255 if value else 0)
+        self.assertTrue(triggered.wait(2))
+        self.assertEqual(controller.detections[4], ())
+
+    def test_markers_are_published_even_while_paused_with_no_hands(self):
+        class Hand:
+            def __init__(self, settings): pass
+
+            def detect(self, frame): return True, (((1.0, 2.0),),)
+
+            def present(self, frame): return True
+
+            def close(self): pass
+
+        controller = self.build(Hand)
+        controller.set_paused(True)
+        _, _, _, _, hands, markers = self.feed(controller, 1, value=255)
+        # Hand inference is skipped on the paused path, so no skeleton is left
+        # drawn over a frame that was never checked.
+        self.assertEqual(hands, ())
 
 
 if __name__ == '__main__':

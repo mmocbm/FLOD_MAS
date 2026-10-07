@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -85,6 +86,9 @@ TWO_BOARD_DEFAULT = CONFIG['two_board']['enabled']
 CROP_RATIO = (float(CONFIG['crop_setup']['aspect_ratio'][0])
               / float(CONFIG['crop_setup']['aspect_ratio'][1]))
 CROP_OUTPUT_SIZE = tuple(CONFIG['crop_setup']['output_size'])
+# How long the camera's own auto white balance and exposure get to converge
+# before the operator is offered the lock.
+AUTO_LOCK_SETTLE_SECONDS = float(CONFIG['capture'].get('auto_lock_settle_seconds', 5.0))
 
 PROJECT_ROOT = DATA_ROOT
 FILES_DIR = PROJECT_ROOT / "Files"
@@ -102,6 +106,12 @@ class CalibrationApp:
         self.camera_provider = camera_provider
         self.closed = False
         self.preview_job = None
+        # Auto-lock wizard state. Defined here rather than in _create_ui because
+        # CalibrationCheckApp overrides _create_ui and never builds these widgets,
+        # while the base stop_camera still touches the state.
+        self.auto_lock_state = 'idle'   # idle | settling | ready | locking | done | failed
+        self.auto_lock_job = None
+        self.auto_lock_deadline = 0.0
         self._preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='calibration-preview')
         self._preview_future = None
         self._scroll_job = None
@@ -334,6 +344,9 @@ class CalibrationApp:
         self._refresh_board_mode_ui()
         tk.Frame(controls, bg=C["border"], height=1).pack(fill=tk.X, padx=12)
 
+        self._create_auto_lock_box(controls)
+        tk.Frame(controls, bg=C["border"], height=1).pack(fill=tk.X, padx=12)
+
         capture_box = tk.Frame(controls, bg=PANEL)
         capture_box.pack(fill=tk.X, padx=12, pady=10)
         section_label(capture_box, "2  Setup photos").pack(anchor="w")
@@ -504,6 +517,145 @@ class CalibrationApp:
         self._set_status(message)
         self.log(message)
 
+    # ==============================================================
+    # auto white balance / exposure lock
+    # ==============================================================
+    def _create_auto_lock_box(self, controls):
+        """Lets the operator freeze the camera's automatic controls."""
+        auto_box = tk.Frame(controls, bg=PANEL)
+        auto_box.pack(fill=tk.X, padx=12, pady=(10, 0))
+        section_label(auto_box, "Camera auto controls").pack(anchor="w")
+        self.auto_instruction = tk.Label(
+            auto_box, text="Start the camera, then hold a black panel in front of it.",
+            bg=PANEL, fg=MUTED, wraplength=360, justify=tk.LEFT, font=(FONT, 9),
+        )
+        self.auto_instruction.pack(anchor="w", pady=(4, 2))
+        self.auto_status = tk.Label(
+            auto_box, text="Automatic white balance and exposure are on",
+            bg=PANEL, fg=CYAN, wraplength=360, justify=tk.LEFT, font=(FONT, 9, "bold"),
+        )
+        self.auto_status.pack(anchor="w", pady=(0, 6))
+        self.auto_btn = self._button(auto_box, "RUN AUTO LOCK", self.start_auto_lock,
+                                     PURPLE, 29, tk.DISABLED)
+        self.auto_btn.pack(fill=tk.X, pady=(0, 4))
+
+    def _cancel_auto_lock(self):
+        """Drop a settle countdown; used by camera stop, switch and page teardown."""
+        if self.auto_lock_job is not None:
+            self.root.after_cancel(self.auto_lock_job)
+            self.auto_lock_job = None
+        if self.auto_lock_state in ('settling', 'ready'):
+            self.auto_lock_state = 'idle'
+
+    def _refresh_auto_lock_ui(self):
+        if not hasattr(self, 'auto_btn'):
+            return  # CalibrationCheckApp builds its own controls
+        if self.auto_lock_state in ('settling', 'locking'):
+            return
+        if not self.camera_running or self.cap is None:
+            self.auto_lock_state = 'idle'
+            self.auto_btn.configure(state=tk.DISABLED, text="RUN AUTO LOCK")
+            self.auto_instruction.configure(
+                text="Start the camera, then hold a black panel in front of it.")
+            self.auto_status.configure(
+                text="Automatic white balance and exposure are on", fg=CYAN)
+            return
+        self.auto_btn.configure(state=tk.NORMAL, text="RUN AUTO LOCK")
+
+    def start_auto_lock(self):
+        """First press starts the settle countdown; the second turns auto off."""
+        if self.closed or not self.camera_running or self.cap is None:
+            self._set_status("Start the camera before locking its automatic controls", AMBER)
+            return
+        if self.auto_lock_state in ('settling', 'locking'):
+            return
+        if self.auto_lock_state == 'ready':
+            self.apply_auto_lock()
+            return
+        self.auto_lock_state = 'settling'
+        self.auto_lock_deadline = time.monotonic() + AUTO_LOCK_SETTLE_SECONDS
+        self.auto_instruction.configure(
+            text="Hold the black panel over the whole view and keep it still.")
+        self.auto_btn.configure(state=tk.DISABLED, text="SETTLING…")
+        self._set_status("Letting automatic white balance and exposure settle…", AMBER)
+        self.log("Auto lock: hold the black panel steady while the camera settles.")
+        self._tick_auto_lock()
+
+    def _tick_auto_lock(self):
+        self.auto_lock_job = None
+        if self.closed or self.auto_lock_state != 'settling':
+            return
+        remaining = self.auto_lock_deadline - time.monotonic()
+        if remaining <= 0:
+            self._auto_lock_ready()
+            return
+        self.auto_status.configure(text=f"Settling… {math.ceil(remaining)}s", fg=AMBER)
+        self.auto_lock_job = self.root.after(100, self._tick_auto_lock)
+
+    def _auto_lock_ready(self):
+        self.auto_lock_state = 'ready'
+        self.auto_btn.configure(state=tk.NORMAL, text="TURN AUTO OFF")
+        self.auto_status.configure(
+            text="Settled — press TURN AUTO OFF to lock both controls.", fg=GREEN)
+        self._set_status("Ready — press TURN AUTO OFF", GREEN)
+        self.log("Auto lock: settle complete.")
+
+    def apply_auto_lock(self):
+        if self.auto_lock_state != 'ready' or self.cap is None:
+            return
+        self.auto_lock_state = 'locking'
+        self.auto_btn.configure(state=tk.DISABLED, text="TURNING OFF…")
+        self.auto_status.configure(text="Turning auto control off…", fg=AMBER)
+        threading.Thread(target=self._auto_lock_worker, args=(self.cap,), daemon=True).start()
+
+    def _auto_lock_worker(self, cap):
+        # The driver call can block, so it never runs on the Tk thread.
+        try:
+            result = cap.lock_automatic()
+        except Exception as error:
+            result = {'error': str(error)}
+        self.root.after(0, self._auto_lock_finished, cap, result)
+
+    def _auto_lock_finished(self, cap, result):
+        # A result for a camera the page has already left must not touch the UI.
+        if self.closed or cap is not self.cap:
+            return
+        self.auto_lock_state = 'failed'
+        self.auto_btn.configure(state=tk.NORMAL, text="RUN AUTO LOCK")
+        if 'error' in result:
+            self.auto_status.configure(text="Auto lock failed", fg=RED)
+            self._set_status("Auto lock failed — camera controls were not changed", RED)
+            self.log(f"Auto lock error: {result['error']}")
+            messagebox.showwarning("Auto lock failed", result['error'])
+            return
+        white_balance, exposure = result['white_balance'], result['exposure']
+        if white_balance['ok'] and exposure['ok']:
+            self.auto_lock_state = 'done'
+            self.auto_status.configure(text="White balance OFF and exposure OFF.", fg=GREEN)
+            self._set_status("Automatic white balance and exposure locked", GREEN)
+            self.log("Auto lock: white balance OFF, then exposure OFF. Both confirmed.")
+            return
+
+        def describe(name, outcome):
+            if outcome['ok']:
+                return f"{name} OFF"
+            actual = outcome['actual']
+            if actual is None:
+                return f"{name} NOT locked"
+            return f"{name} NOT locked (driver reported {actual:g})"
+
+        white_text = describe("white balance", white_balance)
+        exposure_text = describe("exposure", exposure)
+        self.auto_status.configure(text=f"Partial: {white_text}; {exposure_text}.", fg=AMBER)
+        self._set_status("Auto lock incomplete — check the Activity log", RED)
+        self.log(f"Auto lock result — {white_text}; {exposure_text}.")
+        messagebox.showwarning(
+            "Auto lock incomplete",
+            "The camera did not confirm both controls.\n"
+            f"White balance: {'locked' if white_balance['ok'] else 'NOT confirmed'}\n"
+            f"Exposure: {'locked' if exposure['ok'] else 'NOT confirmed'}",
+        )
+
     def _create_title_bar(self):
         title_bar = tk.Frame(self.host, bg=TITLE_BG, height=TITLE_BAR_HEIGHT,
                              highlightbackground=C["border"], highlightthickness=1)
@@ -583,6 +735,7 @@ class CalibrationApp:
                        and self.stage not in ('calibrating', 'extrinsic_capturing')
                        else tk.DISABLED))
         self._refresh_check_panel_buttons()
+        self._refresh_auto_lock_ui()
 
     def begin_new_calibration(self):
         """Start new lens photos without deleting the currently saved calibration."""
@@ -675,6 +828,9 @@ class CalibrationApp:
         if (self.starting_camera or self.processing_capture or self.processing_verification or
                 self.stage in ("calibrating", "extrinsic_capturing")):
             return
+        # stop_camera can decline, so cancel here too: a settle countdown aimed at
+        # the previous device must not survive the switch.
+        self._cancel_auto_lock()
         if self.camera_running:
             self.stop_camera()
         self._close_calibration_checks()
@@ -798,12 +954,14 @@ class CalibrationApp:
         self.start_btn.configure(text="START CAMERA", state=tk.NORMAL)
         self._set_status("Camera could not be opened", RED)
         self.log(f"Camera error: {error}")
+        self._refresh_auto_lock_ui()
         messagebox.showerror("Camera Error", error)
 
     def stop_camera(self):
         if (self.starting_camera or self.processing_capture or self.processing_verification or
                 self.stage in ("calibrating", "extrinsic_capturing")):
             return
+        self._cancel_auto_lock()
         self.camera_running = False
         time.sleep(0.05)
         if self.cap is not None:
@@ -1987,6 +2145,9 @@ class CalibrationApp:
         if self.preview_job is not None:
             self.root.after_cancel(self.preview_job)
             self.preview_job = None
+        if self.auto_lock_job is not None:
+            self.root.after_cancel(self.auto_lock_job)
+            self.auto_lock_job = None
         self.camera_running = False
         if self.cap is not None:
             if not self.camera_provider: self.cap.release()
