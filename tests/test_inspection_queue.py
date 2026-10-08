@@ -16,7 +16,33 @@ from inspection.pipeline import InspectionPipeline
 from inspection.storage import CaptureStore
 from inspection.dashboard import AutomaticDashboard
 from plane_scale import PlaneScale
+from inspection.local.engine import LiveInspection
 from test_local_inspection import synthetic_inspection, CONFIG
+
+
+def four_line_inspection():
+    """Four glue lines on one frame, so the line-count rule can be exercised.
+
+    The shipped machine holds at most four, and the rule distinguishes four
+    lines from one, which a two-line frame cannot.
+    """
+    frame = np.full((800, 1500, 3), 100, np.uint8)
+    source = np.zeros(frame.shape[:2], np.uint8)
+    y = np.arange(30, 770)
+    for x in (250, 500, 750, 1000):
+        boundary = np.column_stack((x + 30*np.sin((y-30)*2*np.pi/740), y))
+        cv2.fillPoly(source, [np.rint(np.vstack(([x-150, 30], boundary,
+                                                 [x-150, 769]))).astype(np.int32)], 255)
+    def adhesive(flat):
+        h, w = flat.shape[:2]
+        mask = np.zeros((h, w), np.uint8)
+        mask[35:65, 15:w-15] = 255
+        return mask
+    inspector = LiveInspection.__new__(LiveInspection)
+    inspector.offset = 100.
+    inspector.source = SimpleNamespace(predict=lambda photo: source.copy())
+    inspector.glue = SimpleNamespace(width=1024, predict=adhesive)
+    return frame, inspector
 
 
 class MarkerTests(unittest.TestCase):
@@ -150,13 +176,41 @@ class QueueTests(unittest.TestCase):
 
 
 class BatchTests(unittest.TestCase):
-    def test_all_and_leftmost_selection(self):
+    def test_only_the_lines_still_owed_are_measured_from_the_left(self):
         frame, inspector, _ = synthetic_inspection()
-        results = list(inspector.run_lines(frame, selection='all'))
+        results = list(inspector.run_lines(frame))
         self.assertEqual([r['selected_line'] for r in results], [1, 2])
         self.assertFalse(results[0]['mask'][:, 600:].any())
-        result = next(inspector.run_lines(frame, selection='leftmost'))
-        self.assertEqual(result['selected_line'], 1)
+        # Line 1 is already measured, so only line 2 is still owed.
+        rest = list(inspector.run_lines(frame, inspected=[1]))
+        self.assertEqual([r['selected_line'] for r in rest], [2])
+        # Every detected line is accounted for: nothing is loaded at all.
+        self.assertEqual(list(inspector.run_lines(frame, inspected=[1, 2])), [])
+
+    def test_a_queued_capture_takes_the_leftmost_of_what_is_left(self):
+        frame, inspector, _ = synthetic_inspection()
+        # One capture is already queued behind this one, so this capture measures
+        # the rightmost line and leaves the leftmost for the queued one.
+        results = list(inspector.run_lines(frame, reserved=1))
+        self.assertEqual([r['selected_line'] for r in results], [2])
+        self.assertEqual(list(inspector.run_lines(frame, reserved=2)), [])
+
+    def test_the_line_count_rule_matches_the_operator_examples(self):
+        frame, inspector = four_line_inspection()
+        self.assertEqual([r['selected_line'] for r in inspector.run_lines(frame)], [1, 2, 3, 4])
+        # Four lines, two already measured, nothing queued: the rightmost two,
+        # loaded left to right so the third is inspected before the fourth.
+        taken = list(inspector.run_lines(frame, inspected=[1, 2]))
+        self.assertEqual([r['selected_line'] for r in taken], [3, 4])
+        centres = [np.nonzero(r['mask'])[1].mean() for r in taken]
+        self.assertEqual(centres, sorted(centres))
+        # A capture already queued takes the next line, so only the fourth is
+        # left; two queued take both, and then nothing is loaded at all.
+        self.assertEqual([r['selected_line'] for r in
+                          inspector.run_lines(frame, inspected=[1, 2], reserved=1)], [4])
+        self.assertEqual(list(inspector.run_lines(frame, inspected=[1, 2], reserved=2)), [])
+        # Every detected line accounted for: no inspection starts.
+        self.assertEqual(list(inspector.run_lines(frame, inspected=[1, 2, 3, 4])), [])
 
     def test_failed_line_does_not_skip_other_lines(self):
         frame, inspector, _ = synthetic_inspection()
@@ -167,10 +221,14 @@ class BatchTests(unittest.TestCase):
                 raise ValueError('empty adhesive')
             return inspect(photo, source, line, index, *args)
         inspector._inspect_line = fail_first
-        results = list(inspector.run_lines(frame, selection='all',
+        results = list(inspector.run_lines(frame,
                        on_error=lambda index, error: failures.append(index)))
         self.assertEqual(failures, [1])
         self.assertEqual([r['selected_line'] for r in results], [2])
+        # Line 1 never produced a result, so it is the only one offered again.
+        inspector._inspect_line = inspect
+        retry = list(inspector.run_lines(frame, inspected=[2]))
+        self.assertEqual([r['selected_line'] for r in retry], [1])
 
     def test_batch_streams_individual_results_and_retains_line_artifacts(self):
         frame, inspector, _ = synthetic_inspection()
@@ -182,7 +240,7 @@ class BatchTests(unittest.TestCase):
             results = []
             with patch('inspection.pipeline.plane_scale.load_frame_scale',
                        return_value=PlaneScale(np.diag([.1,.1,1]), .1)):
-                pipeline.run_batch(frame, frame, {'line_selection': 'all'}, 10, .1,
+                pipeline.run_batch(frame, frame, {}, 10, .1,
                                    on_result=results.append)
             self.assertEqual(len(results), 2)
             self.assertTrue(all(r['measurement']['status'] == 'FAIL' for r in results))
@@ -203,7 +261,7 @@ class BatchTests(unittest.TestCase):
             results = []
             with patch('inspection.pipeline.plane_scale.load_frame_scale',
                        return_value=PlaneScale(np.diag([.1,.1,1]), .1)):
-                pipeline.run_batch(frame, frame, {'line_selection': 'all'}, 10, .1,
+                pipeline.run_batch(frame, frame, {}, 10, .1,
                                    on_result=results.append)
             self.assertEqual(len(results), 2)
             for result in results:

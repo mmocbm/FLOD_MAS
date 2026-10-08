@@ -200,7 +200,7 @@ class ControllerTests(unittest.TestCase):
         cfg['auto_trigger'].update(debounce_frames=1, hand_absence_seconds=.05)
         started, release = threading.Event(), threading.Event()
         processed = []
-        selections = []
+        owed = []
         class Hand:
             def __init__(self, settings): pass
             def present(self, frame): return bool(frame[0,0,0])
@@ -213,7 +213,7 @@ class ControllerTests(unittest.TestCase):
             def run(self, original, *args):
                 count = int(original[0,0,1])
                 processed.append(count)
-                selections.append(args[1]['line_selection'])
+                owed.append((args[1]['inspected_lines'], args[1]['queued_captures']))
                 if len(processed) == 1:
                     started.set()
                     release.wait(4)
@@ -248,12 +248,39 @@ class ControllerTests(unittest.TestCase):
                 results += [payload for event, _, payload in controller.poll() if event == 'result']
                 time.sleep(.02)
             self.assertEqual(processed, [1, 2])
-            self.assertEqual(selections, ['all', 'rightmost'])
+            # This pipeline measures no lines, so nothing is ever recorded as
+            # measured and neither capture has anything queued behind it.
+            self.assertEqual(owed, [([], 0), ([], 0)])
             self.assertEqual([len(result['fabrics']) for result in results], [1, 2])
         finally:
             release.set()
             controller.stop()
             controller.join(2)
+
+    def test_a_capture_owes_the_lines_nothing_has_measured(self):
+        seen = {}
+        class Pipeline:
+            def run_batch(self, original, corrected, metadata, width, tolerance, path,
+                          on_result, on_error):
+                seen.update(metadata)
+                on_result({'measurement': {'selected_line': 2}, 'warnings': []})
+        pipeline = Pipeline()
+        controller = AutoController(CONFIG, lambda: pipeline)
+        controller.pipeline = pipeline
+        controller.inspected_lines = {1}
+        controller.preparing_count = 1
+        controller.pending_jobs.append({'generation': 0, 'epoch': 0})
+        controller._start_job({'original': None, 'corrected': None, 'metadata': {},
+                               'profile': {'width': 4, 'tolerance': 1},
+                               'path': None, 'generation': 0, 'epoch': 0})
+        controller.future.result(timeout=2)
+        # Line 1 is already measured, and the capture queued in front - the one
+        # checking plus the one waiting - takes the next, so this capture is told
+        # it owes two lines fewer.
+        self.assertEqual(seen['inspected_lines'], [1])
+        self.assertEqual(seen['queued_captures'], 2)
+        # The line it did measure is recorded, so no later capture repeats it.
+        self.assertEqual(controller.inspected_lines, {1, 2})
 
     def test_slow_fabric_check_keeps_hand_monitor_running_and_preserves_fifo(self):
         cfg = copy.deepcopy(CONFIG)

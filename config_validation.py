@@ -17,8 +17,6 @@ def validate_automatic_config(config):
 
     if 'marker_confirm_seconds' in config['auto_trigger']:
         number('auto_trigger', 'marker_confirm_seconds', 0.05)
-    if config.get('local_inspection', {}).get('subsequent_line', 'rightmost') not in ('leftmost', 'rightmost'):
-        raise ValueError('local_inspection.subsequent_line must be leftmost or rightmost')
     for key in ('hand_absence_seconds',):
         number('auto_trigger', key, 0.05)
     number('auto_trigger', 'min_hand_present_seconds', 0)

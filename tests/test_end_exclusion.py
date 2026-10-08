@@ -3,7 +3,7 @@ import copy
 import unittest
 import numpy as np
 from inspection.line_measurement import measurement_record
-from inspection.overlay import annotated_overlay
+from inspection.overlay import annotated_overlay, segment_joins
 from plane_scale import PlaneScale
 from config_validation import validate_config
 from test_local_inspection import synthetic_inspection, CONFIG
@@ -83,6 +83,47 @@ class EndExclusionTests(unittest.TestCase):
                 validate_config(cfg)
             with self.assertRaises(ValueError):
                 measurement_record(result, None, 3, .2, value)
+
+
+class SegmentSeparationTests(unittest.TestCase):
+    """The segments meet exactly, so the overlay has to mark the join itself."""
+
+    def test_every_join_is_drawn_across_the_adhesive(self):
+        frame, _, result = synthetic_inspection()
+        measurement = measurement_record(result, PlaneScale(np.diag([.1, .1, 1]), .1), 4, 1)
+        component = max(measurement['components'], key=lambda c: len(c['segments']))
+        joins = segment_joins(component)
+        # Ten segments have nine joins between them, and the first segment has
+        # nothing ahead of it to mark.
+        self.assertEqual(len(joins), len(component['segments']) - 1)
+        drawn = annotated_overlay(frame, measurement)
+        for start, end in joins:
+            # The bar spans the adhesive rather than sitting on the centreline.
+            self.assertGreater(np.hypot(end[0]-start[0], end[1]-start[1]), 10)
+            middle = (int(round((start[0]+end[0])/2)), int(round((start[1]+end[1])/2)))
+            patch = drawn[middle[1]-2:middle[1]+3, middle[0]-2:middle[0]+3]
+            self.assertTrue((patch.max(axis=(0, 1)) > 200).all(), middle)
+
+    def test_a_rejected_boundary_sample_still_marks_the_join(self):
+        # The bar is the last resort of the boundary geometry, never a guess:
+        # a segment whose only located sample failed still shows its join.
+        component = {'segments': [{'segment': 1}, {'segment': 2}],
+                     'samples': [{'segment': 2, 'valid': False, 'left_x': 1, 'left_y': 2,
+                                  'right_x': 3, 'right_y': 4}]}
+        self.assertEqual(segment_joins(component), [((1, 2), (3, 4))])
+
+    def test_the_accepted_sample_is_preferred_over_a_rejected_one(self):
+        component = {'segments': [{'segment': 1}, {'segment': 2}],
+                     'samples': [{'segment': 2, 'valid': False, 'left_x': 0, 'left_y': 0,
+                                  'right_x': 0, 'right_y': 0},
+                                 {'segment': 2, 'valid': True, 'left_x': 5, 'left_y': 6,
+                                  'right_x': 7, 'right_y': 8}]}
+        self.assertEqual(segment_joins(component), [((5, 6), (7, 8))])
+
+    def test_a_segment_without_boundary_geometry_adds_no_bar(self):
+        component = {'segments': [{'segment': 1}, {'segment': 2}],
+                     'samples': [{'segment': 2, 'valid': True, 'center_x': 5, 'center_y': 5}]}
+        self.assertEqual(segment_joins(component), [])
 
 
 if __name__ == '__main__':

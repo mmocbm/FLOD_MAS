@@ -590,9 +590,11 @@ are rejected on startup. No extra packages are required for configuration.
 
 ## Queued inspection and bed reset
 
-- `local_inspection.subsequent_line`: `"rightmost"` (default) or `"leftmost"`.
-  Used when result tabs or running/queued inspections already exist. An empty
-  session always inspects all detected lines. Restart after changing config.
+- Each capture measures the lines nothing has measured yet, taken from the right
+  and loaded left to right, less one line for each capture already queued behind
+  it. When every detected line is accounted for, the capture starts no inspection
+  at all. There is no setting for this; a line that failed is left out, so it is
+  offered again on the next trigger. The bed reset starts a fresh count.
 - `auto_trigger.marker_confirm_seconds`: `0.5`. Continuous confirmation time for
   at least two physical ID-0 markers from `DICT_4X4_50`.
 - Marker reset waits for all accepted inspections, displays final results for

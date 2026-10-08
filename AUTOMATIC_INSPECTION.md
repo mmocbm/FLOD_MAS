@@ -21,10 +21,14 @@ request, API key, manual mask selection or fixed inspection crops.
 5. Extract curved boundaries, remove straight backing edges/caps and endpoint
    hooks (4% endpoint zone, 65 degree hook angle). Keep wave lines with minimum wave
    ratio 0.008, span 10% of the larger frame dimension, and boundary support 90%.
-6. Sort accepted lines by mean x. With no results or outstanding inspections,
-   inspect ALL lines. Otherwise inspect the configured `subsequent_line`
-   (`rightmost` by default, or `leftmost`). Decide this when capturing, not later
-   when the worker dequeues it. No four-line minimum or maximum is imposed.
+6. Sort accepted lines by mean x. Positions are counted from the left and name
+   the same physical line in every capture of a cycle, because lines are only
+   added on the right. Measure the positions not yet measured, taken from the
+   right, less one for each capture already queued behind this one, and load them
+   from the left. A capture owing nothing starts no inspection. A line that failed
+   is not recorded as measured, so it is offered again on the next trigger. Decide
+   this when the capture is loaded, not when it was triggered. The bed reset
+   starts a fresh count. No four-line minimum or maximum is imposed.
 7. Offset 100 undistorted-frame pixels into the source-mask interior. Apply CLAHE
    to source lightness (clip 2, 16x16 tiles), then unfold this curved band horizontally.
    Unfolded height follows the offset; width follows the band's middle arc length.
@@ -34,7 +38,11 @@ request, API key, manual mask selection or fixed inspection crops.
    limit 12 are scaled from model-width pixels; smoothing tolerance is 0.15.
 9. Refold the cleaned mask into the full undistorted frame. Clip to the selected
    band. Label segment widths in millimetres (pixels if uncalibrated), draw passing
-   segments green, and highlight out-of-tolerance segments red.
+   segments green, highlight out-of-tolerance segments red, and mark each internal
+   boundary with a bar across the adhesive so the ten segments are separable on the
+   overlay. The bar is drawn white over a dark outline, not the yellow tick the
+   legacy crop overlay uses, because amber already means an ungraded segment here
+   and a separator must never read as a grade.
 10. Measure each adhesive component with area >=100 pixels using the reference PCA
     slice centreline, perpendicular recentering, 5-pixel sampling and subpixel
     boundary intersections. Total length sums separately measured components,
@@ -116,7 +124,6 @@ settings tab replaces the old segmentation/SAM controls.
 | `local_inspection.glue_model` | `inspection/local/models/segformer_b0.onnx` | Local unfolded adhesive weights |
 | `local_inspection.source_width` | 1152 | Aspect-preserving source AI width |
 | `local_inspection.offset_pixels` | 100.0 | Inward band width in full undistorted-frame pixels |
-| `local_inspection.subsequent_line` | rightmost | Side inspected when a session already has results/work; leftmost also supported |
 | `auto_trigger.marker_confirm_seconds` | 0.5 | Continuous visibility of two physical ID-0 bed markers before reset |
 | `auto_trigger.hand_absence_seconds` | 1.0 | Quiet period after debounced hand absence |
 | `auto_trigger.debounce_frames` | 3 | Consistent fresh samples per presence change |

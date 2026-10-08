@@ -34,6 +34,10 @@ class AutoController(threading.Thread):
         self.paused = False
         self.pause_revision = 0
         self.has_results = False
+        # Line positions measured since the bed was last reset, counted from the
+        # left. Failure to measure a line leaves it out, so that line is offered
+        # again on the next trigger instead of being counted as done.
+        self.inspected_lines = set()
         self.reset_requested = False
         self.reset_ready = False
         self.marker_monitor = None
@@ -70,6 +74,7 @@ class AutoController(threading.Thread):
                     self.has_results = False
                     self.reset_requested = False
                     self.reset_ready = False
+                    self.inspected_lines = set()
         self.wake.set()
 
     def stop(self):
@@ -107,11 +112,6 @@ class AutoController(threading.Thread):
                 if job['epoch'] != self.epoch or job['generation'] != self.generation or not self.active:
                     self._cancel_job(job, 'cancelled')
                     continue
-                # Choose from accepted work, so a rejected earlier fabric check
-                # cannot make the first real inspection skip other lines.
-                job['metadata']['line_selection'] = (
-                    'all' if not self.has_results and not self.busy_except_gate()
-                    else self.config['local_inspection'].get('subsequent_line', 'rightmost'))
                 self.pending_jobs.append(job)
         if self.future is None and self.pending_jobs and self.active and not self.stopped.is_set():
             if (self.pending_jobs[0]['generation'] == self.generation
@@ -146,9 +146,6 @@ class AutoController(threading.Thread):
     def busy(self):
         return self.future is not None or bool(self.pending_jobs) or self.gate_busy
 
-    def busy_except_gate(self):
-        return self.future is not None or bool(self.pending_jobs)
-
     def set_paused(self, paused):
         with self.lock:
             self.paused = bool(paused)
@@ -163,6 +160,7 @@ class AutoController(threading.Thread):
             self.has_results = False
             self.reset_requested = False
             self.reset_ready = False
+            self.inspected_lines = set()
             self.epoch += 1
             self.latest = None
             self.detections = None
@@ -202,6 +200,12 @@ class AutoController(threading.Thread):
         self._status('Inspecting captured fabric…')
         self.future = Future()
         self.job_generation = job['generation']
+        # What this capture still owes, decided here rather than when it was
+        # triggered: the lines nothing has measured yet, less one for each capture
+        # already queued behind this one, which will measure them instead.
+        with self.lock:
+            job['metadata']['inspected_lines'] = sorted(self.inspected_lines)
+            job['metadata']['queued_captures'] = self.preparing_count + len(self.pending_jobs)
 
         def process(future):
             try:
@@ -210,6 +214,8 @@ class AutoController(threading.Thread):
                 def publish(result):
                     if job['generation'] == self.generation and not self.stopped.is_set():
                         self.has_results = True
+                        with self.lock:
+                            self.inspected_lines.add(result['measurement']['selected_line'])
                         self.events.put(('result', job['generation'], result))
                 if hasattr(self.pipeline, 'run_batch'):
                     self.pipeline.run_batch(job['original'], job['corrected'], job['metadata'],
@@ -368,9 +374,7 @@ class AutoController(threading.Thread):
                     # The hand result, fabric verdict, saved raw image and
                     # undistortion all refer to this exact immutable snapshot.
                     original = raw.copy()
-                    selection = ('all' if not self.has_results and not self.busy
-                                 else self.config['local_inspection'].get('subsequent_line', 'rightmost'))
-                    metadata = {'line_selection': selection, 'triggered_at': datetime.now().astimezone().isoformat(),
+                    metadata = {'triggered_at': datetime.now().astimezone().isoformat(),
                                 'frame_sequence': sequence, 'fabric': None,
                                 'end_exclusion_percent': profile.get('end_exclusion_percent',
                                     self.config['inspection'].get('end_exclusion_percent', 5.0)),

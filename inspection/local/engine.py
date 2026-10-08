@@ -18,11 +18,21 @@ class LiveInspection:
             raise ValueError('Inspection offset must be positive and finite')
 
     def run(self, photo, progress=lambda text: None):
-        return next(self.run_lines(photo, progress, "rightmost"))
+        """Single-line callers want the rightmost line and nothing else."""
+        return next(self.run_lines(photo, progress, only_rightmost=True))
 
-    def run_lines(self, photo, progress=lambda text: None, selection="rightmost", on_error=None):
-        if selection not in ("all", "leftmost", "rightmost"):
-            raise ValueError("Invalid line selection")
+    def run_lines(self, photo, progress=lambda text: None, inspected=(), reserved=0,
+                  only_rightmost=False, on_error=None):
+        """Measure the lines this capture still owes, leftmost first.
+
+        Positions are counted from the left and name the same physical line in
+        every capture of a cycle, because lines are only ever added on the right.
+        `inspected` holds the positions already measured, so a line that failed
+        and was never measured is offered again rather than skipped over.
+        `reserved` is how many captures are already queued behind this one: each
+        will measure one more of the lines still outstanding, so this capture
+        leaves that many for them instead of measuring the same line twice.
+        """
         started = perf_counter()
         progress('AI source mask')
         source = self.source.predict(photo)
@@ -35,7 +45,16 @@ class LiveInspection:
         if not lines:
             raise ValueError('No accepted source lines. Check placement or the source mask model.')
         lines.sort(key=lambda line: float(np.mean(np.asarray(line['original_xy'])[:, 0])))
-        indices = range(len(lines)) if selection == 'all' else [0 if selection == 'leftmost' else len(lines)-1]
+        total = len(lines)
+        if only_rightmost:
+            indices = [total - 1]
+        else:
+            measured = {int(position) for position in inspected if 1 <= int(position) <= total}
+            outstanding = [position for position in range(1, total + 1)
+                           if position not in measured]
+            # The rightmost of what is outstanding is what this capture owes once
+            # the queued captures have taken their share of it.
+            indices = [position - 1 for position in outstanding[max(0, int(reserved)):]]
         for index in indices:
             progress(f'Inspecting line {index+1} of {len(lines)}')
             try:
