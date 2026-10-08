@@ -7,7 +7,7 @@
       "height": 3456,
       "fps": 10,
       "fourcc": "",
-      "rotation": 0,
+      "rotation": 180,
       "calibration_file": "Files/camera_calibration_0.json",
       "extrinsics_file": "Files/camera_extrinsics_0.json"
     },
