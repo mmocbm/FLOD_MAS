@@ -43,3 +43,18 @@ tests/automatic_ui_preview.png
 build/
 dist/
 *.egg-info/
+
+# Trained model weights (large; distributed separately)
+segmentation/models/*.onnx
+*.onnx
+*.pt
+
+# Sample images and captures used for experiments (large; kept outside the repository)
+enhancement_images/
+
+# Session transcripts exported from coding assistants (may quote secrets)
+session-ses_*.md
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9]*-*.txt
+
+# Per-user assistant settings
+.claude/settings.local.json
