@@ -1,0 +1,9 @@
+# Running the ONNX model (run_model.py, test_model.py with .onnx)
+numpy
+opencv-python
+onnxruntime-gpu   # or: onnxruntime (CPU only)
+
+# Running the .pt model and converting to ONNX (convert_to_onnx.py)
+torch
+segmentation-models-pytorch==0.3.3
+onnx
