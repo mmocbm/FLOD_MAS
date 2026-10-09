@@ -81,10 +81,44 @@ def _validate_white_fabric_options(config):
     glue_line = segmentation.get('glue_line', {})
     if not isinstance(glue_line, dict):
         raise ValueError('segmentation.glue_line must be an object')
+    shape = glue_line.get('shape_prior', {})
+    if not isinstance(shape, dict) or not isinstance(shape.get('enabled', False), bool):
+        raise ValueError('segmentation.glue_line.shape_prior.enabled must be true or false')
+    if not isinstance(shape.get('template', 'all'), str) or not shape.get('template', 'all'):
+        raise ValueError('segmentation.glue_line.shape_prior.template must be a template name or all')
+    for key, value in shape.items():
+        if key not in ('enabled', 'template') and (not _is_number(value) or value <= 0):
+            raise ValueError(f'segmentation.glue_line.shape_prior.{key} must be a positive number')
+    if shape.get('min_scale', 0.90) >= shape.get('max_scale', 1.10):
+        raise ValueError('segmentation.glue_line.shape_prior.min_scale must be below max_scale')
+    if shape.get('min_seen_share', 0.5) > 1:
+        raise ValueError('segmentation.glue_line.shape_prior.min_seen_share must be at most 1')
     for key, value in glue_line.items():
-        if key == 'track_gaps':
+        if key == 'shape_prior':
+            continue
+        if key == 'sam_prep':
+            if not isinstance(value, dict):
+                raise ValueError('segmentation.glue_line.sam_prep must be an object')
+            continue
+        if key == 'roi_model':
+            if not isinstance(value, str):
+                raise ValueError('segmentation.glue_line.roi_model must be a file path, or empty')
+            continue
+        if key == 'bead_model':
+            if value not in ('edges', 'line', 'auto'):
+                raise ValueError('segmentation.glue_line.bead_model must be edges, line or auto')
+            continue
+        if key == 'background':
+            if value not in ('white', 'any'):
+                raise ValueError('segmentation.glue_line.background must be white or any')
+            continue
+        if key == 'corridor_near_px':
+            if not _is_number(value):
+                raise ValueError('segmentation.glue_line.corridor_near_px must be a number')
+            continue
+        if key in ('track_gaps', 'roi_guided', 'enhance_bead', 'sam_refine', 'roi_mirror_pass', 'roi_strict'):
             if not isinstance(value, bool):
-                raise ValueError('segmentation.glue_line.track_gaps must be true or false')
+                raise ValueError(f'segmentation.glue_line.{key} must be true or false')
             continue
         if not _is_number(value) or value <= 0:
             raise ValueError(f'segmentation.glue_line.{key} must be a positive number')

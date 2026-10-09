@@ -470,6 +470,155 @@ class GlueLineDetectorTests(unittest.TestCase):
             validate_config(config)
 
 
+
+class GlueLineShapeTests(unittest.TestCase):
+    """The glue line always has the same wave shape -- two humps and a dip, like
+    an omega. With the shape as a condition, the whole line is reported even where
+    part of it cannot be seen, and curves of another shape are left out."""
+
+    PROVIDER = 'segmentation.glue_line:GlueLineSegmenter'
+    CHORD = 900.0        # the built-in shape, drawn at about half its learned size
+    SHAPE = dict(enabled=True, min_scale=0.42, max_scale=0.56, min_piece_px=150.0)
+
+    def wave(self, mirror=1.0):
+        from segmentation import glue_shape
+        template = glue_shape.load_templates(['two_panel'])[0]
+        local = template.points * [1.0, mirror]
+        # Laid top to bottom on the fabric, tilted a little.
+        angle = np.radians(96.0)
+        rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+        return (local * self.CHORD) @ rotation.T + (430.0, 90.0)
+
+    def scene(self, path, gap=16, hidden=None):
+        """Pale fabric with a bead along ``path``; ``hidden`` is a (from, to) share
+        of the line with nothing to see at all, as under mesh."""
+        rng = np.random.default_rng(9)
+        frame = np.full((1400, 1000, 3), 235, np.uint8)
+        frame[80:1320, 60:940] = (110, 150, 190)
+        fabric = np.full((1100, 700), 160.0)
+        tangent = np.gradient(path, axis=0)
+        tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
+        normal = np.column_stack([-tangent[:, 1], tangent[:, 0]])
+        keep = np.ones(len(path), bool)
+        if hidden is not None:
+            keep[int(hidden[0] * len(path)):int(hidden[1] * len(path))] = False
+        def line(points, value, thickness):
+            runs = np.flatnonzero(np.diff(np.r_[False, keep, False]))
+            for start, stop in zip(runs[::2], runs[1::2]):
+                cv2.polylines(fabric, [points[start:stop].round().astype(np.int32).reshape(-1, 1, 2)],
+                              False, value, thickness, cv2.LINE_AA)
+        line(path, 172.0, max(3, gap - 8))
+        line(path - normal * gap / 2, 148.0, 3)
+        line(path + normal * gap / 2, 148.0, 3)
+        fabric += rng.normal(0, 0.8, fabric.shape)
+        frame[150:1250, 150:850] = np.clip(fabric, 0, 255)[:, :, None]
+        return frame
+
+    def segment(self, frame, **shape):
+        settings = dict(CONFIG['segmentation'], provider=self.PROVIDER)
+        settings['glue_line'] = dict(settings['glue_line'], min_length_px=300.0,
+                                     shape_prior=dict(self.SHAPE, **shape))
+        from segmentation import create_segmenter
+        return create_segmenter(settings).segment(frame)
+
+    @staticmethod
+    def length(instance):
+        half = len(instance.polygon) // 2
+        centre = (instance.polygon[:half] + instance.polygon[half:][::-1]) / 2.0
+        return float(np.linalg.norm(np.diff(centre, axis=0), axis=1).sum())
+
+    def test_a_line_with_a_hidden_stretch_is_reported_whole(self):
+        path = self.wave()
+        full = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum())
+        frame = self.scene(path, hidden=(0.40, 0.72))
+        without = self.segment(frame, enabled=False)
+        self.assertTrue(all(self.length(i) < 0.6 * full for i in without.instances))
+        result = self.segment(frame)
+        self.assertIs(validate_result(result, frame), result)
+        self.assertEqual(len(result.instances), 1)
+        line = result.instances[0]
+        self.assertAlmostEqual(self.length(line) / full, 1.0, delta=0.06)
+        # Confidence says how much of the whole line was actually measured.
+        self.assertAlmostEqual(line.confidence, 0.68, delta=0.12)
+        half = len(line.polygon) // 2
+        centre = (line.polygon[:half] + line.polygon[half:][::-1]) / 2.0
+        from scipy.spatial import cKDTree
+        offset, _ = cKDTree(path + (150.0, 150.0)).query(centre)
+        self.assertLess(float(np.percentile(offset, 95)), 8.0)
+
+    def test_width_along_the_whole_line_is_the_bead_width(self):
+        frame = self.scene(self.wave(), gap=16, hidden=(0.45, 0.65))
+        fabrics = measure_instances(frame, self.segment(frame), None,
+                                    CONFIG['sam_detection'], 4, 1)
+        self.assertEqual(len(fabrics), 1)
+        self.assertAlmostEqual(fabrics[0].record['measurement']['average_width_px'], 16, delta=3)
+
+    def test_the_mirrored_line_is_found_too(self):
+        result = self.segment(self.scene(self.wave(mirror=-1.0), hidden=(0.40, 0.60)))
+        self.assertEqual(len(result.instances), 1)
+        self.assertGreater(result.instances[0].confidence, 0.6)
+
+    def test_a_bead_of_another_shape_is_left_out(self):
+        y = np.linspace(120.0, 1000.0, 400)
+        arc = np.column_stack([300 + 220 * np.sin(np.pi * (y - 120) / 880), y])   # one deep bow
+        frame = self.scene(arc)
+        self.assertGreaterEqual(len(self.segment(frame, enabled=False).instances), 1)
+        self.assertEqual(len(self.segment(frame).instances), 0)
+
+    def test_shape_condition_is_off_in_the_shipped_config(self):
+        self.assertFalse(CONFIG['segmentation']['glue_line']['shape_prior']['enabled'])
+        for key, value in (('min_scale', 2.0), ('min_seen_share', 1.5), ('enabled', 'yes'),
+                           ('template', '')):
+            config = copy.deepcopy(CONFIG)
+            config['segmentation']['glue_line']['shape_prior'][key] = value
+            with self.assertRaises(ValueError, msg=key):
+                validate_config(config)
+        legacy = copy.deepcopy(CONFIG)
+        del legacy['segmentation']['glue_line']['shape_prior']
+        validate_config(legacy)
+
+
+class GlueShapeModelTests(unittest.TestCase):
+    def template(self):
+        from segmentation import glue_shape
+        return glue_shape, glue_shape.load_templates(['two_panel'])[0]
+
+    def test_a_partial_piece_recovers_where_the_whole_line_lies(self):
+        glue_shape, template = self.template()
+        angle, scale, shift = np.radians(71.0), 1900.0, np.array([812.0, 440.0])
+        rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+        whole = template.points * scale @ rotation.T + shift
+        piece = whole[70:170]                      # half of the line, from its middle
+        residual, mirror, matrix = glue_shape.propose(piece, template, (0.9, 1.1))[0]
+        placed = template.points * [1.0, mirror] @ matrix[:, :2].T + matrix[:, 2]
+        error = min(np.abs(placed - whole).max(), np.abs(placed[::-1] - whole).max())
+        self.assertLess(residual, 1.0)
+        self.assertLess(error, 6.0)
+
+    def test_learning_averages_whole_lines_whichever_way_they_were_traced(self):
+        glue_shape, template = self.template()
+        rng = np.random.default_rng(2)
+        lines = []
+        for index in range(6):
+            angle = rng.uniform(0, 2 * np.pi)
+            rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+            line = (template.points * [1.0, rng.choice([-1.0, 1.0])] * 1800.0) @ rotation.T
+            lines.append(line[::-1] if index % 2 else line)
+        learned, spread = glue_shape.learn_template('copy', lines)
+        self.assertLess(spread, 0.003)
+        self.assertAlmostEqual(learned.chord_px, 1800.0, delta=2.0)
+        self.assertLess(np.abs(learned.points - template.points).max(), 0.01)
+
+    def test_shipped_shape_is_a_wave_with_two_humps_and_a_dip(self):
+        _, template = self.template()
+        height = template.points[:, 1]
+        first, dip, second = height[:80].max(), height[80:120].min(), height[120:].max()
+        self.assertGreater(first, 0.06)
+        self.assertGreater(second, 0.06)
+        self.assertLess(dip, 0.6 * min(first, second))
+        np.testing.assert_allclose(template.points[[0, -1]], [[0, 0], [1, 0]], atol=1e-6)
+
+
 class PreviewOptionTests(unittest.TestCase):
     def test_disabled_preview_does_not_resize_or_access_camera_widgets(self):
         view = FabricResultView.__new__(FabricResultView)

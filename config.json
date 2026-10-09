@@ -254,7 +254,33 @@
       "min_fabric_gray": 90,
       "join_gap_px": 250.0,
       "min_seen_share": 0.55,
-      "track_gaps": true
+      "track_gaps": true,
+      "shape_prior": {
+        "enabled": false,
+        "template": "all",
+        "min_scale": 0.9,
+        "max_scale": 1.1,
+        "tolerance_px": 7.0,
+        "min_seen_share": 0.5,
+        "flex_px": 12.0,
+        "min_piece_px": 300.0,
+        "follow_px": 30.0
+      },
+      "background": "white",
+      "bead_model": "edges",
+      "coloured_saturation": 25.0,
+      "roi_model": "",
+      "roi_grow_px": 25.0,
+      "roi_guided": false,
+      "corridor_near_px": -55.0,
+      "corridor_far_px": 170.0,
+      "cardboard_saturation": 60.0,
+      "enhance_bead": false,
+      "sam_refine": false,
+      "sam_max_width_px": 80.0,
+      "roi_input_width": 768,
+      "roi_mirror_pass": false,
+      "roi_strict": false
     }
   },
   "result_view": {
