@@ -5,6 +5,17 @@ The existing single-camera acquisition, rotation, lens calibration and saved
 measurement-plane setup remain in use. Automatic inspection has no Roboflow
 request, API key, manual mask selection or fixed inspection crops.
 
+Startup displays an animated model-loading screen. The dashboard opens its camera
+only after the hand, fabric classifier and local ONNX models report ready. A model
+load failure stops the animation and displays the error without opening the feed.
+The live dashboard uses compact corner overlays for size, target, status and action
+buttons instead of a bottom panel. Its preview fits the available canvas; preview
+size limits remain applicable to calibration previews. Checking, queued and running
+inspection work animate an activity bar, with queue counts shown alongside it.
+On results with a live side panel, this indicator sits in that panel so it does not
+cover the measured adhesive or its dimension labels. These are UI indicators only;
+the existing FIFO queue and inspection computations are unchanged.
+
 ## Operator cycle
 
 1. A hand appears and leaves. Three fresh agreeing samples debounce presence;

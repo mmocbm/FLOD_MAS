@@ -27,8 +27,7 @@ class PreviewUITests(unittest.TestCase):
         original = np.zeros((1800, 2400, 3), np.uint8)
         app._display_video_frame(original, 1)
         rendered = photo.call_args.args[0]
-        self.assertLessEqual(rendered.width, CONFIG['preview']['max_width'])
-        self.assertLessEqual(rendered.height, CONFIG['preview']['max_height'])
+        self.assertEqual(rendered.size, (2000, 1500))
         self.assertEqual(original.shape, (1800, 2400, 3))
         app._display_video_frame(original, 1)
         self.assertEqual(photo.call_count, 1)

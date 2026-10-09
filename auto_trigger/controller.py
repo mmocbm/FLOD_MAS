@@ -42,6 +42,7 @@ class AutoController(threading.Thread):
         self.reset_ready = False
         self.marker_monitor = None
         self.pipeline = None
+        self.ready = False
         self.gate_busy = False
         self.capture_jobs = queue.Queue()
         self.prepared_jobs = queue.SimpleQueue()
@@ -302,16 +303,22 @@ class AutoController(threading.Thread):
             hand = self.hand_factory(self.settings)
             if self.stopped.is_set():
                 return
+            self._status('Loading fabric classification model…')
             gate = self.fabric_factory(self.settings)
             if self.stopped.is_set():
                 return
+            self._status('Loading adhesive inspection models…')
             self.pipeline = pipeline = self.pipeline_factory()
+            if self.stopped.is_set():
+                return
             threading.Thread(target=self._capture_worker, args=(gate,),
                              name='automatic-fabric-check', daemon=True).start()
             self._reset_checkpoint()
             last_seq, epoch = None, self.epoch
             pause_revision = self.pause_revision
             self.marker_monitor = BedMarkers(self.settings.get("marker_confirm_seconds", 0.5))
+            self.ready = True
+            self.events.put(('ready', self.generation, None))
             self._status('Automatic inspection ready — waiting for a hand')
             while not self.stopped.is_set():
                 self._complete()
@@ -393,7 +400,8 @@ class AutoController(threading.Thread):
                     self._reset_checkpoint()
                     self.events.put(('error', self.generation, str(error)))
         except Exception as error:
-            self.events.put(('error', self.generation, f'Automatic inspection unavailable: {error}'))
+            self.events.put(('error' if self.ready else 'startup_error', self.generation,
+                             f'Automatic inspection unavailable: {error}'))
         finally:
             with self.lock:
                 self.stopped.set()
