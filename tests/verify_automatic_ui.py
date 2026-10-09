@@ -26,7 +26,7 @@ def main():
     frame, _, detected = synthetic_inspection()
     measurement = measurement_record(detected, PlaneScale(np.diag([.1,.1,1]), .1), 3, .05)
     result = dict(measurement=measurement, overlay=annotated_overlay(frame, measurement), mask=detected['mask'],
-                  warnings=[], path='synthetic')
+                  warnings=[], path='synthetic', source_image=frame)
     for index in range(6):
         app._show_automatic_results(result)
         root.update()
@@ -59,6 +59,14 @@ def main():
         view.select_tab(index)
         app._toggle_automatic_pause()
     root.update()
+    app._toggle_automatic_pause()
+    view.developer_controls.enabled.set(True)
+    view.developer_controls.refresh()
+    view.developer_controls.ratio.set('0.98')
+    view._apply_ratio_preview()
+    root.update()
+    assert view.developer_controls.editor.winfo_ismapped()
+    assert all(record['distance_ratio'] == .98 for record in view.records)
     output = Path(__file__).parent / 'automatic_ui_preview.png'
     ImageGrab.grab(window=int(root.frame(), 16)).save(output)
     app._dismiss_result_view()

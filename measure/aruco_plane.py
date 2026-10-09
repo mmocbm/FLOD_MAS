@@ -174,8 +174,10 @@ def annotate_mask_measurements(image, mask, plane, minimum_area_px=100):
         image_points = contour.reshape(-1, 2).astype(np.float64)
         world_points = plane.pixels_to_mm(image_points).astype(np.float32)
         (_, _), (side_a, side_b), _ = cv2.minAreaRect(world_points)
-        length_mm = float(max(side_a, side_b))
-        width_mm = float(min(side_a, side_b))
+        from measurement_adjustment import current_ratio
+        ratio = current_ratio()
+        length_mm = float(max(side_a, side_b)) * ratio
+        width_mm = float(min(side_a, side_b)) * ratio
         if length_mm <= 0 or width_mm <= 0:
             continue
 

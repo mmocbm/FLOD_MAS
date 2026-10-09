@@ -96,9 +96,10 @@ def measure_board_accuracy(
         pixel_to_plane(point, camera_matrix, plane_rvec, plane_tvec) * 1000.0
         for point in undistorted_pixels
     ])
-    return _pair_rows(
+    from measurement_adjustment import adjust_accuracy_rows
+    return adjust_accuracy_rows(_pair_rows(
         object_xy_mm, measured_xy_mm, float(square_length_mm), board_number,
-    )
+    ))
 
 
 def summarize_accuracy(rows):

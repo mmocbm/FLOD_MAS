@@ -367,6 +367,8 @@ class IndustrialDashboard(AutomaticDashboard):
             fg=C["muted"], bg=C["bg"], font=(FONT, 12),
         ).pack(anchor="w", pady=(5, 30))
 
+        from developer_controls import DeveloperControls
+        DeveloperControls(container, edit_ratio=False).pack(fill=tk.X, pady=(0, 12))
         choices = tk.Frame(container, bg=C["bg"])
         choices.pack(fill=tk.X)
         for column in range(2):

@@ -125,6 +125,10 @@ class FabricResultView(CropResultView):
 class LineResultView(FabricResultView):
     """One persistent tab per inspected line, each retaining its zoom and pan."""
     def __init__(self, parent, show_live_preview=True):
+        self._original_results = []
+        self._paused = False
+        self._ratio_job = None
+        self.on_grade_changed = lambda status: None
         super().__init__(parent, show_live_preview, title='INSPECTION RESULTS')
 
     def _build(self):
@@ -136,6 +140,10 @@ class LineResultView(FabricResultView):
         strip = tk.Frame(self, bg=C['bg'])
         strip.pack(side=tk.TOP, fill=tk.X,
                    before=self.canvas.master if self.show_live_preview else self.canvas)
+        from developer_controls import DeveloperControls
+        self.developer_controls = DeveloperControls(strip, self._schedule_ratio_preview, compact=True)
+        self.developer_controls.pack(fill=tk.X, pady=(0, 6))
+        self.developer_controls.set_editing_allowed(False)
         self.tab_strip = tk.Canvas(strip, height=42, bg=C['bg'], highlightthickness=0)
         self.tab_strip.pack(fill=tk.X)
         scroll = tk.Scrollbar(strip, orient=tk.HORIZONTAL, command=self.tab_strip.xview)
@@ -157,10 +165,16 @@ class LineResultView(FabricResultView):
         # Fit the actual inspected line, instead of shrinking it inside the whole bed.
         ys, xs = np.nonzero(result['mask'])
         image = result['overlay']
+        x0, y0, x1, y1 = 0, 0, image.shape[1], image.shape[0]
         if len(xs):
             x0, x1 = max(0, int(xs.min())-160), min(image.shape[1], int(xs.max())+180)
             y0, y1 = max(0, int(ys.min())-40), min(image.shape[0], int(ys.max())+40)
             image = image[y0:y1, x0:x1]
+        import copy
+        source = result.get('source_image')
+        self._original_results.append((copy.deepcopy(result['measurement']),
+            None if source is None else source[y0:y1, x0:x1].copy(),
+            result['mask'][y0:y1, x0:x1].copy(), (x0, y0)))
         self._tabs.append(self._blank_tab(self._to_pil(image)))
         index = len(self._tabs)-1
         button = themed_button(self.tab_header, self._tab_label(index),
@@ -176,9 +190,62 @@ class LineResultView(FabricResultView):
         self._fit_tab(self._active_tab())
         self._render()
         self._show_summary()
+        if self._paused:
+            self._schedule_ratio_preview()
+
+    def set_paused(self, paused):
+        self._paused = bool(paused)
+        self.developer_controls.set_editing_allowed(paused)
+        self._schedule_ratio_preview()
+
+    def _schedule_ratio_preview(self):
+        if self._ratio_job is not None:
+            self.after_cancel(self._ratio_job)
+        self._ratio_job = self.after(120, self._apply_ratio_preview)
+
+    def _apply_ratio_preview(self):
+        import copy
+        from .line_measurement import with_distance_ratio
+        from .overlay import annotated_overlay
+        self._ratio_job = None
+        try:
+            ratio = self.developer_controls.value()
+        except (ValueError, TypeError):
+            return
+        for index, (original, source, mask, origin) in enumerate(self._original_results):
+            if source is None:
+                continue  # Older callers have no clean image on which to redraw labels.
+            record = with_distance_ratio(original, ratio)
+            self.records[index] = record
+            display = copy.deepcopy(record)
+            for component in display['components']:
+                for sample in component['samples']:
+                    for key in ('center_x', 'left_x', 'right_x'):
+                        if sample.get(key) is not None:
+                            sample[key] -= origin[0]
+                    for key in ('center_y', 'left_y', 'right_y'):
+                        if sample.get(key) is not None:
+                            sample[key] -= origin[1]
+            image = annotated_overlay(source, display, mask)
+            self._tabs[index]['image'] = self._to_pil(image)
+        self._refresh_tab_labels()
+        self._render()
+        self._show_summary()
+
+    def destroy(self):
+        if self._ratio_job is not None:
+            self.after_cancel(self._ratio_job)
+            self._ratio_job = None
+        super().destroy()
 
     def _show_summary(self):
         if self.records:
             item = self.records[self._active]
-            self.summary.configure(text=f"Fabric {self._active+1} · {item['status']}",
+            text = f"Fabric {self._active+1} · {item['status']}"
+            if item.get('metric'):
+                text += (f"  ·  Length {item['length_mm']:.2f} mm"
+                         f"  ·  Mean width {item['mean_width_mm']:.2f} mm"
+                         f"  ·  Ratio {item.get('distance_ratio', 1):.6g} ×")
+            self.summary.configure(text=text,
                                    font=('Segoe UI', 12, 'bold'))
+            self.on_grade_changed(item['status'])

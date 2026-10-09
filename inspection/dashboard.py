@@ -66,10 +66,11 @@ class AutomaticDashboard:
         queue_label = getattr(self, 'inspection_queue_label', None)
         if queue_label is not None:
             queue_label.configure(text=controller.queue_text)
-        if controller.reset_requested:
+        if controller.reset_requested and not controller.paused:
             self.update_progress(100, 'Waiting for inspection results…' if self._reset_due is None
                                  else 'Results complete — returning to live…')
-        if self._reset_due is not None and time.monotonic() >= self._reset_due:
+        if (self._reset_due is not None and not controller.paused
+                and time.monotonic() >= self._reset_due):
             self._dismiss_result_view()
             self._reset_due = None
             controller.finish_reset()
@@ -83,6 +84,8 @@ class AutomaticDashboard:
             return
         controller.set_paused(not controller.paused)
         self.auto_pause_button.configure(text='PLAY' if controller.paused else 'PAUSE')
+        if getattr(self, 'result_view', None) is not None:
+            self.result_view.set_paused(controller.paused)
         self.update_progress(100, 'Automatic capture paused · wheel to zoom, drag to pan'
                              if controller.paused else 'Automatic capture running')
 
@@ -124,6 +127,8 @@ class AutomaticDashboard:
                 self.image_panel,
                 show_live_preview=CONFIG.get('result_view', {}).get('show_live_preview', True))
             self.result_view.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+            self.result_view.on_grade_changed = self.set_pass_fail
+            self.result_view.set_paused(self.auto_controller.paused)
         if measurement:
             self.result_view.show_inspection(result)
         status = 'WARNING' if result['warnings'] else measurement['status']

@@ -56,6 +56,28 @@ Nothing at runtime depends on that external Desktop folder.
 
 ## Calibrated measurements and grading
 
+Developer mode can be switched on/off in System settings or Calibration check.
+In Calibration check, use Manual two-point measurement, then change the distance
+multiplier to preview the adjusted distance immediately. `0.98` reduces distances
+by 2%; `1.02` increases them by 2%. Save ratio persists the multiplier; Reset to 1
+immediately saves the neutral multiplier. Leaving developer mode discards an
+unsaved preview. Re-entering manual measurement loads the saved multiplier.
+
+The inspection results screen also includes themed developer controls. Pause
+automatic capture to edit the ratio; the saved value loads on entry. Changes
+update the widths, lengths, labels and grades in every displayed result tab while
+preserving zoom and pan. Save ratio persists it globally; Reset to 1 saves the
+neutral ratio. Resuming discards unsaved edits and displays the saved ratio.
+Previews redraw from clean captured images and original measurements, so repeated
+edits cannot accumulate correction or leave old dimension labels underneath.
+
+The multiplier is stored separately in Documents/data files/Files/measurement_adjustment.json.
+It remains active in normal mode and applies to newly calculated metric widths,
+lengths, manual distances, and board-distance checks. Inspection grades use the
+adjusted widths against the unchanged target/tolerance. Existing saved results
+are not rewritten. Result records include `distance_ratio`. Calibration fitting,
+homographies, reference board dimensions, and pixel measurements are unchanged.
+
 The reference workflow supplies pixels. This application additionally maps the
 refolded centreline and left/right width intersections into millimetres using the
 saved full-frame measurement plane (`plane_scale.load_frame_scale`). It does not

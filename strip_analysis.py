@@ -83,6 +83,7 @@ class StripAnalysis:
     average_width_mm: float | None = None
     target_width_mm: float | None = None
     width_tolerance_mm: float | None = None
+    distance_ratio: float = 1.0
 
     @property
     def minimum_width_px(self) -> float:
@@ -119,16 +120,18 @@ def to_metric(analysis: StripAnalysis, scale) -> StripAnalysis:
     between its own two edge points after mapping, so it stays the width across
     the strip in the plane and not merely in the image.
     """
+    from measurement_adjustment import current_ratio
+    ratio = current_ratio()
     centerline_mm = scale.to_mm(analysis.centerline)
     arc = np.concatenate((
         [0.0],
-        np.cumsum(np.linalg.norm(np.diff(centerline_mm, axis=0), axis=1)),
+        np.cumsum(np.linalg.norm(np.diff(centerline_mm, axis=0), axis=1)) * ratio,
     ))
 
     half = (analysis.widths / 2.0)[:, None]
     left_mm = scale.to_mm(analysis.centerline - analysis.normals * half)
     right_mm = scale.to_mm(analysis.centerline + analysis.normals * half)
-    widths_mm = np.linalg.norm(right_mm - left_mm, axis=1)
+    widths_mm = np.linalg.norm(right_mm - left_mm, axis=1) * ratio
 
     total_length_mm = float(arc[-1])
     segments = []
@@ -153,6 +156,7 @@ def to_metric(analysis: StripAnalysis, scale) -> StripAnalysis:
         segments=segments,
         total_length_mm=total_length_mm,
         average_width_mm=float(widths_mm.mean()),
+        distance_ratio=ratio,
     )
 
 

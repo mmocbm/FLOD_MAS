@@ -31,6 +31,7 @@ class InspectionPipeline:
             record.update(status='complete', frame_size=[width, height], warnings=warnings,
                           settings=self.config['local_inspection'], measurement=measurement)
             return {'measurement': measurement, 'overlay': result['overlay'], 'mask': result['mask'],
+                    'source_image': undistorted,
                     'warnings': warnings, 'path': str(path)}
         except Exception as error:
             record['error'] = str(error)
@@ -76,6 +77,7 @@ class InspectionPipeline:
                 if measurement['status'] == 'WARNING':
                     line_warnings.append('Calibrated widths incomplete or unavailable')
                 on_result({'measurement': measurement, 'overlay': overlay, 'mask': result['mask'],
+                           'source_image': undistorted,
                            'warnings': line_warnings, 'path': str(line_path)})
             record.update(status='complete_with_errors' if failures else 'complete',
                           errors=failures, warnings=warnings, frame_size=[width, height])

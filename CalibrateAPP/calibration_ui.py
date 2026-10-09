@@ -2463,6 +2463,10 @@ class CalibrationCheckApp(CalibrationApp):
             role="quiet", width=13, pady=6,
         ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
 
+        from developer_controls import DeveloperControls
+        self.developer_controls = DeveloperControls(checks, self._preview_distance_ratio)
+        self.developer_controls.pack(fill=tk.X, padx=10, pady=(0, 8))
+
         self.check_report = scrolledtext.ScrolledText(
             controls, height=9, bg=TITLE_BG, fg=C["text_soft"],
             insertbackground=TEXT, font=(MONO_FONT, 9), wrap=tk.WORD,
@@ -2833,6 +2837,8 @@ class CalibrationCheckApp(CalibrationApp):
             self.root.after(0, self._manual_measurement_failed, str(error))
 
     def _manual_measurement_ready(self, image, camera_matrix, rvec, tvec):
+        if hasattr(self, 'developer_controls'):
+            self.developer_controls.reload()
         self.processing_verification = False
         self.manual_region_scale = None
         self.manual_region_index = None
@@ -2861,6 +2867,8 @@ class CalibrationCheckApp(CalibrationApp):
         self.root.after_idle(self._reset_manual_view)
 
     def _manual_region_measurement_ready(self, image, scale, region_index):
+        if hasattr(self, 'developer_controls'):
+            self.developer_controls.reload()
         self.processing_verification = False
         self.manual_region_scale = scale
         self.manual_region_index = region_index
@@ -3071,10 +3079,19 @@ class CalibrationCheckApp(CalibrationApp):
             results.append(plane_xy * 1000.0)
         return np.asarray(results, dtype=np.float64)
 
+    def _preview_distance_ratio(self):
+        if getattr(self, 'manual_measurement_active', False) and len(self.manual_points) == 2:
+            self._calculate_manual_distance()
+            self._render_manual_measurement()
+
     def _calculate_manual_distance(self):
         try:
+            from measurement_adjustment import current_ratio
+            ratio = (self.developer_controls.value() if hasattr(self, 'developer_controls')
+                     else current_ratio())
             world_points = self._manual_pixels_to_plane_mm(self.manual_points)
-            self.manual_distance_mm = float(np.linalg.norm(world_points[1] - world_points[0]))
+            raw_distance = float(np.linalg.norm(world_points[1] - world_points[0]))
+            self.manual_distance_mm = raw_distance * ratio
         except (cv2.error, np.linalg.LinAlgError, TypeError, ValueError) as error:
             self.manual_distance_mm = None
             self._set_check_report(f"Manual distance could not be calculated.\n\n{error}")
@@ -3089,6 +3106,8 @@ class CalibrationCheckApp(CalibrationApp):
             f"Point 1:       ({p1[0]:.2f}, {p1[1]:.2f}) px\n"
             f"Point 2:       ({p2[0]:.2f}, {p2[1]:.2f}) px\n"
             f"Pixel distance: {pixel_distance:.3f} px\n"
+            f"Before multiplier: {raw_distance:.3f} mm\n"
+            f"Distance multiplier: {ratio:.8g} x\n"
             f"Linear distance: {self.manual_distance_mm:.3f} mm\n\n"
             + (f"Region 0{self.manual_region_index} homography used directly."
                if self.manual_region_scale is not None else
@@ -3530,7 +3549,8 @@ class CalibrationCheckApp(CalibrationApp):
 
             rows = region_calibration.pairwise_distance_errors_mm(
                 scale.homography, detection.crop_points, detection.board_points_mm)
-            summary = summarize_accuracy(rows)
+            from measurement_adjustment import adjust_accuracy_rows
+            summary = summarize_accuracy(adjust_accuracy_rows(rows))
 
             plane_summary = None
             plane_note = None
@@ -3539,9 +3559,9 @@ class CalibrationCheckApp(CalibrationApp):
                     camera_number, definition, frame_size, CROP_OUTPUT_SIZE,
                     ratio=CROP_RATIO)
                 plane_summary = summarize_accuracy(
-                    region_calibration.pairwise_distance_errors_mm(
+                    adjust_accuracy_rows(region_calibration.pairwise_distance_errors_mm(
                         plane.homography, detection.crop_points,
-                        detection.board_points_mm))
+                        detection.board_points_mm)))
             except (plane_scale.PlaneScaleError, KeyError, IndexError,
                     ValueError, TypeError) as error:
                 plane_note = str(error)

@@ -169,7 +169,12 @@ class QueueTests(unittest.TestCase):
         with patch('inspection.dashboard.time.monotonic', return_value=11.99):
             AutomaticDashboard._poll_automatic(app)
         self.assertEqual(calls, ['result'])
+        controller.set_paused(True)
         with patch('inspection.dashboard.time.monotonic', return_value=12.01):
+            AutomaticDashboard._poll_automatic(app)
+        self.assertEqual(calls, ['result'])
+        controller.set_paused(False)
+        with patch('inspection.dashboard.time.monotonic', return_value=13):
             AutomaticDashboard._poll_automatic(app)
         self.assertEqual(calls, ['result', 'clear'])
         self.assertFalse(controller.reset_requested)

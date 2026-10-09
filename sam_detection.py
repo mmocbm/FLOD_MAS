@@ -447,6 +447,7 @@ def strip_record(measurement: StripMeasurement | None) -> dict[str, Any] | None:
         "minimum_width_px": _rounded(analysis.minimum_width_px),
         "maximum_width_px": _rounded(analysis.maximum_width_px),
         "total_length_mm": _rounded(analysis.total_length_mm),
+        "distance_ratio": analysis.distance_ratio,
         "average_width_mm": _rounded(analysis.average_width_mm),
         "minimum_width_mm": _rounded(analysis.minimum_width_mm),
         "maximum_width_mm": _rounded(analysis.maximum_width_mm),
