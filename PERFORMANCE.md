@@ -68,3 +68,10 @@ If rendering is still the bottleneck, try a 150–200 ms preview interval and sm
 preview bounds. A supported lower camera resolution is a larger potential saving,
 but calibration, crop alignment and measurement accuracy must be verified at that
 resolution. Settings and their tradeoffs are described in `CONFIGURATION.md`.
+
+## Glue-line Pipeline Lab
+
+The Pipeline Lab (`tools/pipeline_lab.py`) is separate from the inspection cycle reviewed
+above. Its time per frame, stage by stage, is in `GLUE_LINE_FINDINGS.md`, section *Time per
+frame*: about 22 s on dark and white fabric and 45 s on pink on the development PC with
+the cloud API, and about 5 s with SAM on the PC's own GPU (section *Local GPU flow*).

@@ -35,3 +35,11 @@ opencv-contrib-python==4.12.0.88
 mediapipe==1.0.1
 tensorflow==2.21.0
 tf-keras==2.21.0
+
+# Runs the trained glue-region (ROI) model exported with a free input size.
+onnxruntime
+
+# Optional, Pipeline Lab only (SAM on the local GPU; the inspection app does not need them):
+#   torch (CUDA build), transformers          - sam2.1-* and sam3 local models
+#   ultralytics (AGPL-3.0)                    - mobile-sam, fastsam-*
+#   lightgbm, scikit-learn                    - trained edge corrector (tools/train_bead_ml.py)

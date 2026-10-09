@@ -200,6 +200,170 @@ again along the stretch at a relaxed threshold and measures the width there, so
 that stretch counts as seen rather than as a guess; if neither edge survives, the
 straight bridge is used and confidence falls exactly as before.
 
+### The line's shape as a condition
+
+On these products the glue line always has the same wave: two humps on one side of
+the straight line joining its ends, with a dip between them, like an omega. On the
+sample frames, 19 whole lines of the two-panel product agree with their average to
+0.74 % of their length (14 pixels in 1863).
+
+`segmentation.glue_line.shape_prior` uses that. Each stretch of bead evidence
+proposes where the whole wave would have to lie for that stretch to be part of it;
+a proposal is kept only if the rest of the evidence agrees along enough of its
+length, and the stretch that proposed it must itself stay on the line. The result:
+
+- every glue line is reported whole, end to end, even where part of it cannot be
+  seen (under mesh, or where an edge has faded);
+- a bead-like curve of another shape -- a cup edge, a seam, a fold -- is left out;
+- along the whole line the two edges are looked for exactly where a bead of that
+  width would have them, so faint stretches are measured rather than skipped;
+- confidence is the share of the whole line whose width was actually measured. The
+  rest is where the shape says the line must be, with the neighbouring width.
+  Set `segmentation.min_confidence` to stop a mostly inferred line from grading.
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `shape_prior.enabled` | false | Use the shape condition. Off reproduces the detector exactly as before |
+| `shape_prior.template` | `all` | A template name from `segmentation/glue_shapes.json`, or `all` |
+| `shape_prior.min_scale`, `max_scale` | 0.90, 1.10 | How much smaller or larger than the template a line may be. Keep it tight: a loose range lets a short visible stretch be read as a small whole line |
+| `shape_prior.tolerance_px` | 7 | How close evidence must lie to count as on the line |
+| `shape_prior.min_seen_share` | 0.5 | Share of the whole line that must be seen, and then measured, for it to be reported |
+| `shape_prior.flex_px` | 12 | How far the line may bend from the pure shape, for fabric laid slightly stretched |
+| `shape_prior.min_piece_px` | 300 | Shortest stretch of evidence that may propose a line |
+| `shape_prior.follow_px` | 30 | Corridor either side of the fitted shape in which the bead itself is followed, sample by sample |
+
+Templates are in full-frame pixels at the working camera height. Learn one per
+product, and again if the camera height changes:
+
+```text
+.venv\Scripts\python.exe tools\learn_glue_shape.py two_panel frames\*.png
+```
+
+It needs at least three whole lines that agree, and prints how closely they do.
+The shipped file holds `two_panel` only. The four-panel sample frames gave one
+whole line, too few to learn from, so that product is currently matched with the
+two-panel wave and follows the bead less closely.
+
+After the shape is placed, the bead itself is followed inside a narrow corridor
+around it (`follow_px`), so the reported edges sit on the bead wherever it shows.
+
+Measured on the 16 pale-fabric sample frames (12-36 seconds each on a CPU): 50
+lines, every one whole (about 1780-2180 pixels), against 50 mostly partial strips
+without the condition. Width was measured along 62-97 % of each line. The
+four-panel frames gave 4 and 2 lines of the 4 present in each, and frame 0052 gave
+2 of about 5. With the condition off, output is identical to the detector without
+it on all 16 frames; on dark fabric it still reports nothing.
+
+Where a line is inferred rather than seen, its position comes from the shape alone
+and cannot be checked in the image; a stretch of evidence fixes the line sideways
+well, but lets it slide along its own length by some tens of pixels.
+
+### Pipeline Lab (trying things by hand)
+
+`tools/pipeline_lab.py` is a window for experiments on any image; it is separate
+from the inspection app and changes nothing in it.
+
+```text
+.venv\Scripts\python.exe tools\pipeline_lab.py [image]
+```
+
+1. **Region of interest** - whole image, the trained panel model, or a box drawn
+   with the mouse (Mouse: *Draw ROI box*).
+2. **Pre-processing steps** - add steps from the menu and order them with *Up* /
+   *Down*; *On/off* skips one without removing it. Steps: resize, denoise, flatten
+   lighting, CLAHE, bead enhance, local contrast gain, smooth along the line, sharpen,
+   sharpen with a negative kernel, negative, quantise, shine
+   compress, dim outside ROI. Select a step to set its values. They run top to
+   bottom, inside the ROI, and the picture is redrawn as a value changes.
+3. **Segmenter** - SAM 3 with points placed automatically (along the lines the
+   local detector finds on the original picture), with points placed by hand
+   (Mouse: *Place points*; left click = glue, right click = not glue), or with a
+   text prompt.
+
+*Run* shows the outline and, per line, its length and width in pixels, the fabric
+colour, and how much of the line's two edges SAM outlined itself; *Show* picks the
+picture after any step. *Save recipe* / *Load recipe* keep a set-up as JSON, and
+*Save result* writes the overlay and the numbers. The SAM choices upload the image
+area to Roboflow and need `ROBOFLOW_API_KEY`; everything else runs locally. The step
+functions are in `tools/pipeline_steps.py` and can be used from scripts.
+
+**How a line's outline is made (automatic points).** Each line is handled inside
+its own ROI region. SAM's mask is cut to the ROI and read as a ribbon along the
+rough line. On dark fabric SAM outlines the bead evenly at the first asking. On
+pink and white fabric it outlines the bead over most of a line and spills into the
+band or mesh beside it over the rest, so:
+
+- a stretch where an edge leaves the line's steady course is replaced by that
+  course (each edge judged alone, since a spill moves one edge);
+- a line outlined on less than 95 % of its edges is put to SAM again, up to twice,
+  with other tiles and points; SAM then spills somewhere else and the steady parts
+  of the answers are put together;
+- a line SAM took too wide over most of its length is corrected with the width it
+  gave the frame's evenly outlined lines.
+
+"SAM outlined N %" is the share of the two edges that is SAM's own; the rest is the
+carried-over course, where a narrow or wide spot would not show.
+
+**Finishing on the bead's own edges** (tick box, on by default, automatic points only).
+SAM's outline drifts off the bead on white and pink fabric and runs past its ends. With the
+box ticked the final outline is read from the original picture along the line
+(`segmentation/bead_edges.py`): the bead is a band darker than the fabric on both sides, and
+its two edges are found in a strip straightened and averaged along the line. Nothing is
+uploaded for this step. The overlay shows the final outline in green and SAM's own thin in
+magenta; the result row adds "edges steady N %". Measured results and the method are in
+`GLUE_LINE_FINDINGS.md`.
+
+**SAM on this PC's GPU.** "SAM runs on" chooses between the Roboflow cloud (image tiles are
+uploaded) and this PC's own GPU (nothing is uploaded; the default when a CUDA GPU is found).
+Local models: `sam2.1-large` (default), `sam2.1-base-plus`, `sam2.1-small`, `sam2.1-tiny`,
+`sam3` (gated weights: accept the licence of `facebook/sam3` on huggingface.co and run
+`hf auth login` once), and `mobile-sam`, `fastsam-s`, `fastsam-x` through `ultralytics`
+(measured: not usable on pale fabric). With the GPU the ROI model also runs on it. "Ask SAM
+once per line" skips the repeat askings; with the ribbon the result is the same and a frame
+takes about 5 s instead of 22-45 s. The text prompt needs the cloud. Measurements are in
+`GLUE_LINE_FINDINGS.md`, *Local GPU flow*; `tools/benchmark_flow.py` re-measures them.
+
+**Trained segmenter (researched, not in the tool).** A SegFormer fine-tuned on the tool's
+own best outlines marks every glue line on native 512 px tiles with no prompts, in about a
+second, and copes with soft white frames where SAM does not. It is not offered in the window
+yet: its licence is non-commercial and it must be trained per product. Method, settings,
+results and how to repeat it: `GLUE_LINE_FINDINGS.md`, *SegFormer and CLAHE*; scripts and
+models in `~/flod_experiments/segformer/`.
+
+**Edges placed by.** With the ribbon, how the band's two edges are placed: `trees` (a
+trained correction by gradient-boosted trees, the most accurate on the truth bench; offered
+once `tools/train_bead_ml.py` has been run and `lightgbm` is installed), `slope` (steepest
+slope, as before) or `profile_fit` (a fitted edge model). `tools/accuracy_bench.py` measures
+any of them against painted glue lines of known edges; results in `GLUE_LINE_FINDINGS.md`,
+*Accuracy*.
+
+**Smooth ribbon from the true shape** (tick box, off by default, automatic points only).
+The glue line is a smooth curve of even width; SAM's outline on pale fabric is jagged and
+starts and stops in the wrong place, and the edge finder steps sideways where the shiny core
+runs along one edge. With the box ticked both are used as evidence, weighted by what the
+picture is like at each place, and one ribbon is fitted (`segmentation/ribbon.py`). Dots
+beside each line show the state found there: cyan shiny, blue matte, red one-sided, orange
+weak, grey none. A stretch where both kinds of evidence are steadily wider or narrower than
+the ribbon is drawn red and listed as a width deviation. The result row gives "backed by
+evidence N %" and the misfit in pixels, and says CHECK BY EYE when either is poor. The
+reference the method was judged against is learned from black-fabric frames with
+`tools/learn_bead_reference.py`.
+
+**Filters by fabric colour, as measured** (M1 captures, SAM 3, automatic points):
+
+| Fabric | Best | Notes |
+|---|---|---|
+| Dark | no steps | every line outlined 96-100 % at the first asking |
+| White | no steps | CLAHE about equal; flatten, bead enhance, denoise worse |
+| Pink | no steps | CLAHE and bead enhance equal or worse |
+
+On pale fabric the glue is 4-6 lightness levels darker than the fabric and no colour
+channel separates it better than lightness. Raising that contrast (*local contrast
+gain*, *flatten lighting*) makes SAM outline a different, wider band (55-70 px
+instead of about 30) - evenly, but it is not the object outlined on dark fabric.
+Enlarging the picture two or three times fragments the outline. What raises the
+share SAM outlines on pale fabric is asking again, not a filter.
+
 ### What software cannot fix
 
 - **The fabric classifier** was not trained on white fabric. If it reports
