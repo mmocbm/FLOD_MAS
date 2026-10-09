@@ -23,7 +23,15 @@ def main():
     with patch.object(IndustrialDashboard, '_init_automatic'):
         app = IndustrialDashboard(root, lambda: None)
     app.auto_controller = AutoController(CONFIG, lambda: None)  # never start models/workers
+    app._show_startup_loading()
+    root.update()
+    ImageGrab.grab(window=int(root.frame(), 16)).save(Path(__file__).parent/'startup_ui_preview.png')
+    app._hide_startup_loading()
     frame, _, detected = synthetic_inspection()
+    app._display_video_frame(frame, 1)
+    root.update()
+    assert app.bottom_panel.winfo_manager() == 'place'
+    ImageGrab.grab(window=int(root.frame(), 16)).save(Path(__file__).parent/'live_ui_preview.png')
     measurement = measurement_record(detected, PlaneScale(np.diag([.1,.1,1]), .1), 3, .05)
     result = dict(measurement=measurement, overlay=annotated_overlay(frame, measurement), mask=detected['mask'],
                   warnings=[], path='synthetic', source_image=frame)

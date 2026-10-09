@@ -179,27 +179,28 @@ class IndustrialDashboard(AutomaticDashboard):
                  font=(FONT, 11, "bold")).pack(side=tk.LEFT, padx=(10, 8))
         tk.Label(brand, text="Production console", fg=C["muted"], bg=C["surface"],
                  font=(FONT, 9)).pack(side=tk.LEFT)
+        self.action_overlay = tk.Frame(self.root, bg=C['surface'], padx=5, pady=5,
+                                       highlightbackground=C['border'], highlightthickness=1)
         themed_button(self.title_bar, "✕", self.close_application, role="quiet",
                       padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
         themed_button(self.title_bar, "—", self.minimize_window, role="quiet",
                       padx=16, pady=6, font_size=12).pack(side=tk.RIGHT, fill=tk.Y)
-        themed_button(self.title_bar, "SETTINGS", self.open_settings_selector, role="quiet",
+        themed_button(self.action_overlay, "SETTINGS", self.open_settings_selector, role="quiet",
                       padx=16, pady=6).pack(side=tk.RIGHT, fill=tk.Y)
         self.auto_pause_button = themed_button(
-            self.title_bar, "PAUSE", self._toggle_automatic_pause, role="primary", padx=16, pady=6)
+            self.action_overlay, "PAUSE", self._toggle_automatic_pause, role="primary", padx=16, pady=6)
         self.auto_pause_button.pack(side=tk.RIGHT, fill=tk.Y)
         # Resets restart the whole application, so they belong with the other
         # session-wide controls rather than in the bottom panel.
-        themed_button(self.title_bar, "RESET", self.reset_dashboard, role="danger",
+        themed_button(self.action_overlay, "RESET", self.reset_dashboard, role="danger",
                       padx=16, pady=6).pack(side=tk.RIGHT, fill=tk.Y)
         self.overlay_button = themed_button(
-            self.title_bar, "", self._toggle_overlays, role="secondary", padx=16, pady=6)
+            self.action_overlay, "", self._toggle_overlays, role="secondary", padx=16, pady=6)
         self.overlay_button.pack(side=tk.RIGHT, fill=tk.Y)
         self._refresh_overlay_button()
         self.inspection_queue_label = tk.Label(
             self.root, text="Queue: 0 checking | 0 waiting | 0 inspecting",
             bg=C["surface"], fg=C["text"], font=(FONT, 10), anchor="w", padx=16)
-        self.inspection_queue_label.pack(side=tk.TOP, fill=tk.X)
         self.title_bar.bind("<ButtonPress-1>", self._start_move)
         self.title_bar.bind("<B1-Motion>", self._do_move)
 
@@ -281,52 +282,27 @@ class IndustrialDashboard(AutomaticDashboard):
     # bottom panel
     # --------------------------------------------------------------
     def _create_bottom_panel(self):
-        self.bottom_panel = tk.Frame(
-            self.main_frame, height=BOTTOM_PANEL_HEIGHT, bg=C["surface"],
-            highlightbackground=C["border"], highlightthickness=1,
-        )
-        self.bottom_panel.pack(side=tk.BOTTOM, fill=tk.X)
-        self.bottom_panel.pack_propagate(False)
-
-        # ---- left: size display only ----
-        left_section = tk.Frame(self.bottom_panel, bg=C["surface"])
-        left_section.pack(side=tk.LEFT, fill=tk.Y, padx=(18, 12), pady=13)
-
-        # Large size display
-        self.lbl_large_size = tk.Label(
-            left_section,
-            text=self.active_size,
-            fg=C["text"], bg=C["surface"],
-            font=(FONT, 28, "bold")
-        )
-        tk.Label(left_section, text="ACTIVE SIZE", fg=C["muted"], bg=C["surface"],
-                 font=(FONT, 8, "bold")).pack(anchor="w")
-        self.lbl_large_size.pack(anchor="w", pady=(0, 1))
-
-        self.session_time_label = tk.Label(
-            left_section,
-            text="",
-            fg=C["muted"], bg=C["surface"],
-            font=(FONT, 9)
-        )
-        self.session_time_label.pack(anchor="w", pady=(2, 0))
-
-        # ---- center: status label (LIVE) ----
-        center_section = themed_card(self.bottom_panel, bg=C["surface_2"])
-        center_section.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=13)
-        status_head = tk.Frame(center_section, bg=C["surface_2"])
-        status_head.pack(fill=tk.X, padx=16, pady=(10, 0))
-        status_dot(status_head).pack(side=tk.LEFT, padx=(0, 7))
-        tk.Label(status_head, text="SYSTEM STATUS", fg=C["muted"], bg=C["surface_2"],
-                 font=(FONT, 8, "bold")).pack(side=tk.LEFT)
-        self.status_result_label = tk.Label(
-            center_section, text="LIVE", fg=C["accent"], bg=C["surface_2"],
-            font=(FONT, 20, "bold"), width=9, anchor="w",
-        )
-        self.status_result_label.pack(fill=tk.X, padx=16, pady=(2, 8))
-
-        # SETTINGS lives only in the title bar, and RESET beside PAUSE there, so
-        # the bottom panel is left with the read-only status displays.
+        """Small camera HUD; does not reserve space below the feed."""
+        self.bottom_panel = tk.Frame(self.image_panel, bg=C['surface'], padx=12, pady=8,
+                                     highlightbackground=C['border'], highlightthickness=1)
+        self.bottom_panel.place(x=20, y=20)
+        self.lbl_large_size = tk.Label(self.bottom_panel, text=self.active_size,
+            fg=C['text'], bg=C['surface'], font=(FONT, 20, 'bold'))
+        self.lbl_large_size.pack(side=tk.LEFT, padx=(0, 14))
+        details = tk.Frame(self.bottom_panel, bg=C['surface'])
+        details.pack(side=tk.LEFT)
+        self.status_result_label = tk.Label(details, text='STARTING', fg=C['accent'],
+            bg=C['surface'], font=(FONT, 10, 'bold'), anchor='w')
+        self.status_result_label.pack(anchor='w')
+        self.profile_limits_label = tk.Label(details,
+            text=f'{self.active_strip_width:g} ± {self.active_strip_width_tolerance:g} mm',
+            fg=C['text_soft'], bg=C['surface'], font=(FONT, 9))
+        self.profile_limits_label.pack(anchor='w')
+        self.session_time_label = tk.Label(details, text='Active inspection size',
+            fg=C['muted'], bg=C['surface'], font=(FONT, 8))
+        self.session_time_label.pack(anchor='w')
+        self.action_overlay.place(in_=self.image_panel, relx=1, x=-20, y=20, anchor='ne')
+        self.action_overlay.lift()
 
     # ==============================================================
     # settings windows
@@ -631,8 +607,10 @@ class IndustrialDashboard(AutomaticDashboard):
         self.active_strip_width_tolerance = validated_tolerance
         self.active_result_display_seconds = display_seconds
 
-        # Refresh bottom-panel display
+        # Refresh camera overlay profile.
         self.lbl_large_size.config(text=self.active_size)
+        self.profile_limits_label.config(
+            text=f'{validated_width:g} ± {validated_tolerance:g} mm')
         
         self.session_start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.session_time_label.config(text=f"Session Start: {self.session_start_time}")
@@ -695,6 +673,9 @@ class IndustrialDashboard(AutomaticDashboard):
 
     def resume_video(self):
         self.video_paused = False
+        if (not getattr(self, '_models_loading', False)
+                and getattr(self, '_camera_start_requested', False) and self.camera1 is None):
+            self.start_video_stream()
 
     # ==============================================================
     # image panel (dual canvases + zoom toolbars)
@@ -748,15 +729,17 @@ class IndustrialDashboard(AutomaticDashboard):
 
         # ---- progress bar ----
         self.loading_container = tk.Frame(self.image_panel, bg=C["bg"], height=24)
-        self.loading_container.pack(side=tk.BOTTOM, fill=tk.X)
+        self.loading_container.place(x=20, rely=1, y=-20, anchor="sw", width=520)
 
         self.progress_label = tk.Label(self.loading_container, text="Live Feed",
                                        fg=C["muted"], bg=C["bg"], font=(FONT, 9))
-        self.progress_label.pack(side=tk.LEFT, padx=(14, 10))
+        self.progress_label.configure(wraplength=490, anchor="w", justify="left")
+        self.progress_label.pack(fill=tk.X, padx=12, pady=(24, 2))
+        self.inspection_queue_label.place(in_=self.loading_container, x=0, y=0, relwidth=1, height=22)
 
         self.progress_bar = ttk.Progressbar(self.loading_container, orient=tk.HORIZONTAL,
                                             mode='determinate', style="App.Horizontal.TProgressbar")
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 14), pady=8)
+        self.progress_bar.pack(fill=tk.X, padx=12, pady=(2, 8))
 
         # Store original pack options for restoration
         self.left_frame_pack_opts = {'side': tk.LEFT, 'fill': tk.BOTH, 'expand': True, 'padx': (0, 5)}
@@ -814,6 +797,9 @@ class IndustrialDashboard(AutomaticDashboard):
     # ==============================================================
 
     def start_video_stream(self):
+        if getattr(self, '_models_loading', False):
+            self._camera_start_requested = True
+            return
         if self.camera1 is not None and (CAMERA_COUNT == 1 or self.camera2 is not None):
             # Resume must not create a second independently scheduled feed loop.
             if getattr(self, '_video_job', None) is not None:
@@ -821,6 +807,7 @@ class IndustrialDashboard(AutomaticDashboard):
                 self._video_job = None
             self.video_streaming = True
             self.video_paused = False
+            self._hide_startup_loading()
             self.update_video_feed()
             self._refresh_inspection_availability()
             return
@@ -851,6 +838,9 @@ class IndustrialDashboard(AutomaticDashboard):
                 if not getattr(self, '_closing', False):
                     self.set_pass_fail("CAMERA ERROR")
                     self.update_progress(0, " | ".join(errors))
+                    if hasattr(self, 'startup_bar'):
+                        self.startup_bar.stop()
+                        self.startup_description.configure(text='Camera could not start. Check camera setup.', fg=C['danger'])
                 return
             self.camera1 = cameras[0]
             self.camera2 = cameras[1] if CAMERA_COUNT == 2 else None
@@ -901,8 +891,7 @@ class IndustrialDashboard(AutomaticDashboard):
 
         frame_height, frame_width = frame.shape[:2]
         preview_scale, offset_x, offset_y = preview_transform(
-            (frame_width, frame_height), cw, ch,
-            CONFIG['preview']['max_width'], CONFIG['preview']['max_height'])
+            (frame_width, frame_height), cw, ch)
         previous = getattr(self, f'_preview_snapshot_{canvas_num}', None)
         if not (previous is not None and previous[0] is frame
                 and previous[1:] == (canvas, cw, ch) and canvas.find_withtag("img")):
@@ -951,8 +940,11 @@ class IndustrialDashboard(AutomaticDashboard):
         self.status_result_label.config(text=status, fg=colours.get(status, C["muted"]))
 
     def update_progress(self, value, text):
-        self.progress_bar['value'] = value
+        if not getattr(self, '_activity_animating', False):
+            self.progress_bar['value'] = 0
         self.progress_label.config(text=text)
+        if getattr(self, '_models_loading', False) and hasattr(self, 'startup_description'):
+            self.startup_description.configure(text=text)
         self.root.update_idletasks()
 
     # ==============================================================
@@ -1085,7 +1077,7 @@ def main():
     root = tk.Tk()
 
     def load_initial():
-        app.update_progress(0, "Initializing cameras…")
+        app.update_progress(0, "Loading inspection models…")
         app.start_video_stream()
 
     # ------------------------------------------------------------------
